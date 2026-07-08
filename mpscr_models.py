@@ -39,18 +39,25 @@ def initialize_alpha_s(t, delta, n_cuts = 6):
     s = tf.cast(s, tf.float32)
     return alpha0, s
 
-def build_mpscr_model(y, delta, input_dim, a0, phi, phi_inv, C, C_inv, p_min, p_max, hasq, seed = 10, n_cuts = 5):
+def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
     '''
-    Structure the Two-parameter Modified Power Series distribution in the architecture required for the thetaflow package.
-    The functions receives as inputs the corresponding power series structure function sequence, a(q), its base function, phi(theta; q) and its inverse phi_inv(u; q).
-    We also consider the normalizing constant function C(theta, q) = A(phi(theta; q)).
-    Finally, in order to consider the parametrization over the cure probability instead of theta, we also receive the inverse of the normalizing function, C_inv(p, q).
-    Apart of the functions that define the model itself, we also need to specify the final bounds for the cure probability. While more flexible
-    models have simply p in (0,1), more specific models such as the Borel distribution admits p in (1/e, 1) only, being physically unable to produce cure probabilities interior of p_min.
-
-    For the baseline distribution, we assume here to be a simple Piecewise-Exponential, following the work of Xie & Yu (2021). We keep 5 cuts by default. However, that number can be semalessly changed.
+        Structure the Two-parameter Modified Power Series distribution in the architecture required for the thetaflow package.
+        A model_spec object is provided, which is aimed at completely specifying the modified power series model by providing its associated functions
+        such as, a_m(q), phi(theta, q), C(theta, q), as well as its inherent probability bounds:
+        While more flexible models have simply p in (0,1), more specific models such as the Borel distribution admits p in (1/e, 1) only, being physically unable to produce cure probabilities interior of p_min.
+        
+        For the baseline distribution, we assume here to be a simple Piecewise-Exponential, following the work of Xie & Yu (2021). We keep 5 cuts by default. However, that number can be semalessly changed.
     '''
 
+    a0 = model_spec.a0
+    phi = model_spec.phi
+    phi_inv = model_spec.phi_inv
+    C = model_spec.C
+    C_inv = model_spec.C_inv
+    p_min = model_spec.p_min
+    p_max = model_spec.p_max
+    hasq = model_spec.hasq
+    
     _, s = initialize_alpha_s(y, delta, n_cuts = n_cuts)
 
     def softplus_inv(y):
@@ -103,7 +110,7 @@ def build_mpscr_model(y, delta, input_dim, a0, phi, phi_inv, C, C_inv, p_min, p_
         y = tf.clip_by_value(y, eps, np.inf)
         p = tf.clip_by_value(p, eps, 1.0-eps)
         
-        theta = C_inv(a0 / p, q)
+        theta = C_inv( a0(q) / p, q )
 
         # Base survival function (piecewise exponential in this case)
         S0 = pwexp.cdf(y, alpha, s, lower_tail = False)
@@ -196,8 +203,8 @@ def build_mpscr_model(y, delta, input_dim, a0, phi, phi_inv, C, C_inv, p_min, p_
         p_train = tf.clip_by_value(p_train, eps, 1.0-eps)
         p_test = tf.clip_by_value(p_test, eps, 1.0-eps)
     
-        theta_train = self.C_inv(a0 / p_train, q)
-        theta_test = self.C_inv(a0 / p_test, q)
+        theta_train = self.C_inv( a0(q) / p_train, q )
+        theta_test = self.C_inv( a0(q) / p_test, q )
     
         S0_ts = pwexp.cdf(ts_grid, alpha, s, lower_tail = False)
         S0_train = pwexp.cdf(y_train, alpha, s, lower_tail = False)
@@ -237,18 +244,105 @@ def build_mpscr_model(y, delta, input_dim, a0, phi, phi_inv, C, C_inv, p_min, p_
             "p_train": p_train,
             "p_test": p_test,
             "alpha": alpha,
-            "s": self.s,
-            "A_train": A_u_ts_train,
-            "C_theta": C_theta_train,
-            "u_train": u_ts_train
+            "s": self.s
         }
 
     model.get_survival_cure = types.MethodType( get_survival_cure, model )
     
     return model
 
+class MPSPoisson:
+
+    def __init__(self):
+        self.p_min = 0.0
+        self.p_max = 1.0
+        self.sup = np.arange(501)
+        self.hasq = False
+
+        def a(m, q):
+            return tf.math.exp( self.log_a(m, q) )
+    
+        def a0(q):
+            return 1.0
+        
+        def log_a(m, q):
+            return -tf.math.lgamma(m+1)
+        
+        def phi(theta, q):
+            return tf.identity(theta)
+        
+        def log_phi(theta, q):
+            return tf.math.log(theta)
+                               
+        def phi_inv(u, q):
+            return tf.identity(u)
+        
+        def C(theta, q):
+            return tf.math.exp(theta)
+        
+        def C_inv(u, q):
+            return tf.math.log(u)
+        
+        def A(u, q):
+            theta = phi_inv(u, q)
+            return C(theta, q)
+
+        self.a = a
+        self.a0 = a0
+        self.log_a = log_a
+        self.phi = phi
+        self.log_phi = log_phi
+        self.phi_inv = phi_inv
+        self.C = C
+        self.C_inv = C_inv
+        self.A = A
 
 
+class MPSBinomial:
+
+    def __init__(self):
+        a0 = 1.0
+        p_min = 0.0
+        p_max = 1.0
+        sup = np.arange(501)
+
+    def a(m, q):
+        return tf.math.exp( self.log_a(m, q) )
+
+    def a0(q):
+        return 1.0
+    
+    def log_a(m, q):
+        return -tf.math.lgamma(m+1)
+    
+    def phi(theta, q):
+        return tf.identity(theta)
+    
+    def log_phi(theta, q):
+        return tf.math.log(theta)
+                           
+    def phi_inv(u, q):
+        return tf.identity(u)
+    
+    def C(theta, q):
+        return tf.math.exp(theta)
+    
+    def C_inv(u, q):
+        return tf.math.log(u)
+    
+    def A(u, q):
+        theta = phi_inv(u, q)
+        return C(theta, q)
+
+    self.a = a
+    self.a0 = a0
+    self.log_a = log_a
+    self.phi = phi
+    self.log_phi = log_phi
+    self.phi_inv = phi_inv
+    self.C = C
+    self.C_inv = C_inv
+    self.A = A
 
 
 
