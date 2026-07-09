@@ -49,39 +49,49 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
         For the baseline distribution, we assume here to be a simple Piecewise-Exponential, following the work of Xie & Yu (2021). We keep 5 cuts by default. However, that number can be semalessly changed.
     '''
 
+    # Basic functions that define a specific distribution from the Two-Parameter Modified Power Series family 
     a0 = model_spec.a0
     phi = model_spec.phi
     phi_inv = model_spec.phi_inv
     C = model_spec.C
     C_inv = model_spec.C_inv
+    # Functions of q to define the parameter space of the cure probability, which models theta directly
+    # In special cases of the MPS family, such as the Restricted Generalized Poisson (RGP) model,
+    # we have that, for a given value of q, theta varies in the range (0, |q|^{-1}),
+    # therefore, we have a varying parameter space, that must be updated with each new value of q
     p_min = model_spec.p_min
     p_max = model_spec.p_max
+    # If hasq is True, the model treats q as an unknown parameter to be estimated
     hasq = model_spec.hasq
-    
+    # If hasq is False, then q is treated as a known constant or is completely ignored
+    # In the first case, fixed_q represents that known value
+    fixed_q = model_spec.fixed_q
+
+    # Determine the cut points and initialize the values of the baseline piecewise exponential distribuion
     _, s = initialize_alpha_s(y, delta, n_cuts = n_cuts)
 
     def softplus_inv(y):
         return tf.math.log(tf.math.exp(y) - 1)
-
-    def bounded_sigmoid(u):
-        return tf.math.sigmoid(u) * (p_max - p_min) + p_min
     
-    def logit(u):
-        return -( tf.math.log(1-u) - tf.math.log(u) )
-
-    def bounded_logit(u):
-        return logit( (u - p_min) / (p_max - p_min) )
+    # def logit(u):
+    #     return -( tf.math.log(1-u) - tf.math.log(u) )
+        
+    # def bounded_sigmoid(u):
+    #     return tf.math.sigmoid(u) * (p_max - p_min) + p_min
+    
+    # def bounded_logit(u):
+    #     return logit( (u - p_min) / (p_max - p_min) )
 
     if(hasq):
         parameters = {
             "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": n_cuts+1, "init": 1.0, "warmup_time": 0},
             "q": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": 1, "init": 1.0, "warmup_time": 0},
-            "p": {"link": bounded_sigmoid, "link_inv": bounded_logit, "par_type": "nn", "shape": 1, "init": 0.5, "warmup_time": 0},
+            "raw_p": {"link": tf.identity, "link_inv": tf.identity, "par_type": "nn", "shape": 1, "init": 0.0, "warmup_time": 0},
         }
     else:
         parameters = {
             "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": n_cuts+1, "init": 1.0, "warmup_time": 0},
-            "p": {"link": bounded_sigmoid, "link_inv": bounded_logit, "par_type": "nn", "shape": 1, "init": 0.5, "warmup_time": 0},
+            "raw_p": {"link": tf.identity, "link_inv": tf.identity, "par_type": "nn", "shape": 1, "init": 0.0, "warmup_time": 0},
         }
 
     def A(u, q):
@@ -102,10 +112,11 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
             # q is a constant parameter (e.g. dispersion of a Negative Binomial)
             q = model.get_variable("q")
         else:
-            q = 0.0
+            q = fixed_q
         # Theta represents the lead parameter of the model (e.g. scale of a Negative Binomial)
-        p = model.get_variable("p", nn_output)
-
+        raw_p = model.get_variable("raw_p", nn_output)
+        p = tf.math.sigmoid(raw_p) * (p_max(q) - p_min(q)) + p_min(q)
+        
         eps = tf.constant(1.0e-5, dtype = tf.float32)
         y = tf.clip_by_value(y, eps, np.inf)
         p = tf.clip_by_value(p, eps, 1.0-eps)
@@ -192,14 +203,18 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
         if(self.hasq):
             q = self.predict("q")
         else:
-            q = 0.0
+            q = fixed_q
         s = self.s
     
         ts_grid = np.linspace(0.0001 , np.max(np.concatenate([y_train, y_test])), ngrid)[:,None]
         
         eps = tf.constant(1.0e-5, dtype = tf.float32)
-        p_train = pred_train["p"].numpy().flatten()
-        p_test = pred_test["p"].numpy().flatten()
+        raw_p_train = pred_train["raw_p"].numpy().flatten()
+        raw_p_test = pred_test["raw_p"].numpy().flatten()
+
+        p_train = tf.math.sigmoid(raw_p_train) * (p_max(q) - p_min(q)) + p_min(q)
+        p_test = tf.math.sigmoid(raw_p_test) * (p_max(q) - p_min(q)) + p_min(q)
+
         p_train = tf.clip_by_value(p_train, eps, 1.0-eps)
         p_test = tf.clip_by_value(p_test, eps, 1.0-eps)
     
@@ -253,20 +268,19 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
 
 class MPSPoisson:
 
-    def __init__(self):
-        self.p_min = 0.0
-        self.p_max = 1.0
-        self.sup = np.arange(501)
+    def __init__(self):        
+        self.sup = tf.cast( np.arange(501), tf.float32 )
         self.hasq = False
+        self.fixed_q = tf.cast(0.0, tf.float32)
+        
+        def log_a(m, q):
+            return -tf.math.lgamma(m+1)
 
         def a(m, q):
             return tf.math.exp( self.log_a(m, q) )
     
         def a0(q):
-            return 1.0
-        
-        def log_a(m, q):
-            return -tf.math.lgamma(m+1)
+            return tf.cast(1.0, tf.float32)
         
         def phi(theta, q):
             return tf.identity(theta)
@@ -287,6 +301,12 @@ class MPSPoisson:
             theta = phi_inv(u, q)
             return C(theta, q)
 
+        def p_min(q):
+            return tf.cast(0.0, tf.float32)
+
+        def p_max(q):
+            return tf.cast(1.0, tf.float32)
+        
         self.a = a
         self.a0 = a0
         self.log_a = log_a
@@ -296,55 +316,168 @@ class MPSPoisson:
         self.C = C
         self.C_inv = C_inv
         self.A = A
+        self.p_min = p_min
+        self.p_max = p_max
 
 
 class MPSBinomial:
 
+    def __init__(self, fixed_q):
+        self.hasq = False
+        self.fixed_q = tf.cast(fixed_q, tf.float32)
+        self.sup = np.arange(fixed_q+1)
+        
+        def log_a(m, q):
+            return tf.math.lgamma(q+1) - tf.math.lgamma(m+1) - tf.math.lgamma(q-m+1)
+
+        def a(m, q):
+            return tf.math.exp( log_a(m, q) )
+
+        def a0(q):
+            return tf.cast(1.0, tf.float32)
+        
+        def phi(theta, q):
+            return theta / (1-theta)
+        
+        def log_phi(theta, q):
+            return tf.math.log(theta) - tf.math.log(1-theta)
+                               
+        def phi_inv(u, q):
+            return u / (1 + u)
+        
+        def C(theta, q):
+            return (1-theta)**(-q)
+        
+        def C_inv(u, q):
+            return 1 - u**(-1/q)
+        
+        def A(u, q):
+            theta = phi_inv(u, q)
+            return C(theta, q)
+
+        def p_min(q):
+            return tf.cast(0.0, tf.float32)
+
+        def p_max(q):
+            return tf.cast(1.0, tf.float32)
+        
+        self.a = a
+        self.a0 = a0
+        self.log_a = log_a
+        self.phi = phi
+        self.log_phi = log_phi
+        self.phi_inv = phi_inv
+        self.C = C
+        self.C_inv = C_inv
+        self.A = A
+        self.p_min = p_min
+        self.p_max = p_max
+
+class MPSNegBinomial:
+
     def __init__(self):
-        a0 = 1.0
-        p_min = 0.0
-        p_max = 1.0
-        sup = np.arange(501)
+        self.hasq = True
+        self.fixed_q = tf.cast(0.0, tf.float32)
+        self.sup = np.arange(501)
+        
+        def log_a(m, q):
+            return tf.math.lgamma(1/q+m) - tf.math.lgamma(1/q) - tf.math.lgamma(m+1)
 
-    def a(m, q):
-        return tf.math.exp( self.log_a(m, q) )
+        def a(m, q):
+            return tf.math.exp( log_a(m, q) )
 
-    def a0(q):
-        return 1.0
-    
-    def log_a(m, q):
-        return -tf.math.lgamma(m+1)
-    
-    def phi(theta, q):
-        return tf.identity(theta)
-    
-    def log_phi(theta, q):
-        return tf.math.log(theta)
-                           
-    def phi_inv(u, q):
-        return tf.identity(u)
-    
-    def C(theta, q):
-        return tf.math.exp(theta)
-    
-    def C_inv(u, q):
-        return tf.math.log(u)
-    
-    def A(u, q):
-        theta = phi_inv(u, q)
-        return C(theta, q)
+        def a0(q):
+            return tf.cast(1.0, tf.float32)
+        
+        def phi(theta, q):
+            return q * theta / (1 + q*theta)
+        
+        def log_phi(theta, q):
+            return tf.math.log(q * theta) - tf.math.log(1 + q*theta)
+                               
+        def phi_inv(u, q):
+            return u / (q * (1-u))
+        
+        def C(theta, q):
+            return (1+q*theta)**(1/q)
+        
+        def C_inv(u, q):
+            return (u**q - 1) / q
+        
+        def A(u, q):
+            theta = phi_inv(u, q)
+            return C(theta, q)
 
-    self.a = a
-    self.a0 = a0
-    self.log_a = log_a
-    self.phi = phi
-    self.log_phi = log_phi
-    self.phi_inv = phi_inv
-    self.C = C
-    self.C_inv = C_inv
-    self.A = A
+        def p_min(q):
+            return tf.cast(0.0, tf.float32)
 
+        def p_max(q):
+            return tf.cast(1.0, tf.float32)
+        
+        self.a = a
+        self.a0 = a0
+        self.log_a = log_a
+        self.phi = phi
+        self.log_phi = log_phi
+        self.phi_inv = phi_inv
+        self.C = C
+        self.C_inv = C_inv
+        self.A = A
+        self.p_min = p_min
+        self.p_max = p_max
 
+class MPSLogarithmic:
+
+    def __init__(self):
+        self.hasq = False
+        self.fixed_q = tf.cast(0.0, tf.float32)
+        self.sup = np.arange(501)
+        
+        def log_a(m, q):
+            return -tf.math.log(m+1)
+
+        def a(m, q):
+            return tf.math.exp( log_a(m, q) )
+
+        def a0(q):
+            return tf.cast(1.0, tf.float32)
+        
+        def phi(theta, q):
+            return tf.identity(theta)
+        
+        def log_phi(theta, q):
+            return tf.math.log(theta)
+                               
+        def phi_inv(u, q):
+            return tf.identity(u)
+        
+        def C(theta, q):
+            return -tf.math.log(1-theta) / theta
+        
+        def C_inv(u, q):
+            return 1 + tfp.math.lambertw(-u * tf.math.exp(-u)) / u
+        
+        def A(u, q):
+            theta = phi_inv(u, q)
+            return C(theta, q)
+
+        def p_min(q):
+            return tf.cast(0.0, tf.float32)
+
+        def p_max(q):
+            return tf.cast(1.0, tf.float32)
+        
+        self.a = a
+        self.a0 = a0
+        self.log_a = log_a
+        self.phi = phi
+        self.log_phi = log_phi
+        self.phi_inv = phi_inv
+        self.C = C
+        self.C_inv = C_inv
+        self.A = A
+        self.p_min = p_min
+        self.p_max = p_max
 
 
 
