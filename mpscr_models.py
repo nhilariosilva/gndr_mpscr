@@ -66,26 +66,23 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
     # If hasq is False, then q is treated as a known constant or is completely ignored
     # In the first case, fixed_q represents that known value
     fixed_q = model_spec.fixed_q
+    # If q is a trainable parameter, must specify its corresponding link function
+    link_q = None
+    link_inv_q = None
+    if(hasq):
+        link_q = model_spec.link_q
+        link_inv_q = model_spec.link_inv_q
 
     # Determine the cut points and initialize the values of the baseline piecewise exponential distribuion
     _, s = initialize_alpha_s(y, delta, n_cuts = n_cuts)
-
-    def softplus_inv(y):
-        return tf.math.log(tf.math.exp(y) - 1)
     
-    # def logit(u):
-    #     return -( tf.math.log(1-u) - tf.math.log(u) )
-        
-    # def bounded_sigmoid(u):
-    #     return tf.math.sigmoid(u) * (p_max - p_min) + p_min
+    def softplus_inv(u):
+        return tf.math.log(tf.math.exp(u) - 1)
     
-    # def bounded_logit(u):
-    #     return logit( (u - p_min) / (p_max - p_min) )
-
     if(hasq):
         parameters = {
             "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": n_cuts+1, "init": 1.0, "warmup_time": 0},
-            "q": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": 1, "init": 1.0, "warmup_time": 0},
+            "q": {"link": link_q, "link_inv": link_inv_q, "par_type": "independent", "shape": 1, "init": 1.0, "warmup_time": 0},
             "raw_p": {"link": tf.identity, "link_inv": tf.identity, "par_type": "nn", "shape": 1, "init": 0.0, "warmup_time": 0},
         }
     else:
@@ -117,7 +114,7 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
         raw_p = model.get_variable("raw_p", nn_output)
         p = tf.math.sigmoid(raw_p) * (p_max(q) - p_min(q)) + p_min(q)
         
-        eps = tf.constant(1.0e-5, dtype = tf.float32)
+        eps = tf.constant(1.0e-4, dtype = tf.float32)
         y = tf.clip_by_value(y, eps, np.inf)
         p = tf.clip_by_value(p, eps, 1.0-eps)
         
@@ -125,7 +122,9 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
 
         # Base survival function (piecewise exponential in this case)
         S0 = pwexp.cdf(y, alpha, s, lower_tail = False)
-        log_f0 = tf.math.log( pwexp.pdf(y, alpha, s) )
+        h0 = pwexp.h(y, alpha, s)
+        log_S0 = pwexp.log_survival(y, alpha, s)
+        log_f0 = tf.math.log(h0) + log_S0
         
         C_theta = C( theta, q )
 
@@ -139,8 +138,15 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
         log_f_pop = tf.math.log( Aprime_u ) - tf.math.log( C_theta ) + log_f0 + tf.math.log( phi(theta, q) )
         
         loglik_terms = delta * log_f_pop + (1-delta) * log_S_pop
-        # loglik_terms = tf.constant([0.0], dtype = tf.float32)
         neg_loglik = -tf.reduce_sum(loglik_terms)
+
+        if(tf.math.is_nan( neg_loglik )):
+            tf.print("loglik NAN:")
+            tf.print("Aprime_u[nan]", Aprime_u[tf.math.is_nan(log_f_pop)] )
+            # tf.print("any tf.math.log( Aprime_u ) - tf.math.log( C_theta ) NAN:", tf.reduce_sum(tf.cast(tf.math.is_nan(tf.math.log( Aprime_u ) - tf.math.log( C_theta )), tf.int32) ))
+            # tf.print("tf.math.log( Aprime_u ):", tf.reduce_sum(tf.cast(tf.math.is_nan( tf.math.log( Aprime_u ) ), tf.int32) ))
+            # tf.print("any log_f_pop NAN:", tf.reduce_sum(tf.cast(tf.math.is_nan(log_f_pop), tf.int32) ))
+            # tf.print("any log_S_pop NAN:", tf.reduce_sum(tf.cast(tf.math.is_nan(log_S_pop), tf.int32) ))
         
         return neg_loglik
 
@@ -183,7 +189,6 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
     model = thf.ModelNN(parameters, loglikelihood_loss,
                         neural_network, neural_network_call,
                         neural_network_call_nolast, input_dim = input_dim, seed = seed)
-
     model.hasq = hasq
     model.s = s
     model.a0 = a0
@@ -194,6 +199,8 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
     model.p_min = p_min
     model.p_max = p_max
     model.A = A
+    model.link_q = link_q
+    model.link_inv_q = link_inv_q
 
     def get_survival_cure(self, y_train, X_train, y_test, X_test, ngrid = 100):    
         pred_train = self.predict(X_train)
@@ -266,10 +273,11 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
     
     return model
 
+B = 501
+
 class MPSPoisson:
 
     def __init__(self):        
-        self.sup = tf.cast( np.arange(501), tf.float32 )
         self.hasq = False
         self.fixed_q = tf.cast(0.0, tf.float32)
         
@@ -306,6 +314,9 @@ class MPSPoisson:
 
         def p_max(q):
             return tf.cast(1.0, tf.float32)
+
+        def sup(q):
+            return tf.cast( np.arange(B), tf.float32 )
         
         self.a = a
         self.a0 = a0
@@ -318,6 +329,7 @@ class MPSPoisson:
         self.A = A
         self.p_min = p_min
         self.p_max = p_max
+        self.sup = sup
 
 
 class MPSBinomial:
@@ -325,7 +337,6 @@ class MPSBinomial:
     def __init__(self, fixed_q):
         self.hasq = False
         self.fixed_q = tf.cast(fixed_q, tf.float32)
-        self.sup = np.arange(fixed_q+1)
         
         def log_a(m, q):
             return tf.math.lgamma(q+1) - tf.math.lgamma(m+1) - tf.math.lgamma(q-m+1)
@@ -360,6 +371,9 @@ class MPSBinomial:
 
         def p_max(q):
             return tf.cast(1.0, tf.float32)
+
+        def sup(q):
+            return tf.cast( np.arange(q+1), tf.float32 )
         
         self.a = a
         self.a0 = a0
@@ -372,13 +386,17 @@ class MPSBinomial:
         self.A = A
         self.p_min = p_min
         self.p_max = p_max
+        self.sup = sup
 
 class MPSNegBinomial:
 
-    def __init__(self):
-        self.hasq = True
-        self.fixed_q = tf.cast(0.0, tf.float32)
-        self.sup = np.arange(501)
+    def __init__(self, fixed_q = None):
+        if(fixed_q is None):
+            self.hasq = True
+            self.fixed_q = tf.cast(0.0, tf.float32)
+        else:
+            self.hasq = False
+            self.fixed_q = tf.cast(fixed_q, tf.float32)
         
         def log_a(m, q):
             return tf.math.lgamma(1/q+m) - tf.math.lgamma(1/q) - tf.math.lgamma(m+1)
@@ -413,6 +431,16 @@ class MPSNegBinomial:
 
         def p_max(q):
             return tf.cast(1.0, tf.float32)
+
+        def sup(q):
+            sup = tf.cast( np.arange(B), tf.float32 )
+
+        def link_q(q):
+            return tf.math.softplus(q)
+        
+        def link_inv_q(u):
+            # Inverse of the softplus function
+            return tf.math.log(tf.math.exp(u) - 1)
         
         self.a = a
         self.a0 = a0
@@ -425,13 +453,16 @@ class MPSNegBinomial:
         self.A = A
         self.p_min = p_min
         self.p_max = p_max
+        self.sup = sup
+        self.link_q = link_q
+        self.link_inv_q = link_inv_q
 
+        
 class MPSLogarithmic:
 
     def __init__(self):
         self.hasq = False
         self.fixed_q = tf.cast(0.0, tf.float32)
-        self.sup = np.arange(501)
         
         def log_a(m, q):
             return -tf.math.log(m+1)
@@ -466,6 +497,9 @@ class MPSLogarithmic:
 
         def p_max(q):
             return tf.cast(1.0, tf.float32)
+
+        def sup(q):
+            return tf.cast(np.arange(B), tf.float32)
         
         self.a = a
         self.a0 = a0
@@ -478,7 +512,88 @@ class MPSLogarithmic:
         self.A = A
         self.p_min = p_min
         self.p_max = p_max
+        self.sup = sup
 
+
+class MPSRGP:
+
+    def __init__(self, fixed_q = None):
+        if(fixed_q is None):
+            self.hasq = True
+            self.fixed_q = tf.cast(0.0, tf.float32)
+        else:
+            self.hasq = False
+            self.fixed_q = tf.cast(fixed_q, tf.float32)
+        
+        def log_a(m, q):
+            return -tf.math.log(m+1)
+
+        def a(m, q):
+            return tf.math.exp( log_a(m, q) )
+
+        def a0(q):
+            return tf.cast(1.0, tf.float32)
+        
+        def phi(theta, q):
+            return tf.identity(theta)
+        
+        def log_phi(theta, q):
+            return tf.math.log(theta)
+                               
+        def phi_inv(u, q):
+            return tf.identity(u)
+        
+        def C(theta, q):
+            return -tf.math.log(1-theta) / theta
+        
+        def C_inv(u, q):
+            return 1 + tfp.math.lambertw(-u * tf.math.exp(-u)) / u
+        
+        def A(u, q):
+            theta = phi_inv(u, q)
+            return C(theta, q)
+
+        def p_min(q):
+            return tf.cast(tf.math.exp(-tf.math.abs(1/q)), tf.float32)
+
+        def p_max(q):
+            return tf.cast(1.0, tf.float32)
+
+        def sup(q):
+            if(q > 0):
+                return tf.cast( np.arange(B), tf.float32 )
+            else:
+                if(q < -1):
+                    raise ValueError("q value can't be less than -1")
+                max_sup = tf.math.ceil( tf.math.abs(1/q) ) - 1
+                return np.arange(max_sup+1).astype(np.float64)
+
+        def link_q(q):
+            # We allow q to vary between -1/3 and infinity.
+            # That allows us to obtain an RGP(q) model with support from {0,1,2}
+            # At its extreme, q = -1/2 and the support of the RGP distribution collapses to {0,1} (i.e. a Bernoulli)
+            # For q > -1/2, the support varies from {0,1,2}, {0,1,2,3}, ..., up to an infinite support when q > 0
+            # Specifically, fow q = 0, we recover the Poisson model
+            return tf.math.softplus(q) - 1/2
+        
+        def link_inv_q(u):
+            # Inverse of the softplus function translated 1/2 below
+            return tf.math.log(tf.math.exp(u + 1/2) - 1)
+            
+        self.a = a
+        self.a0 = a0
+        self.log_a = log_a
+        self.phi = phi
+        self.log_phi = log_phi
+        self.phi_inv = phi_inv
+        self.C = C
+        self.C_inv = C_inv
+        self.A = A
+        self.p_min = p_min
+        self.p_max = p_max
+        self.sup = sup
+        self.link_q = link_q
+        self.link_inv_q = link_inv_q
 
 
 
