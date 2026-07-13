@@ -69,6 +69,7 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
     # If q is a trainable parameter, must specify its corresponding link function
     link_q = None
     link_inv_q = None
+    A = model_spec.A
     if(hasq):
         link_q = model_spec.link_q
         link_inv_q = model_spec.link_inv_q
@@ -90,14 +91,6 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
             "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": n_cuts+1, "init": 1.0, "warmup_time": 0},
             "raw_p": {"link": tf.identity, "link_inv": tf.identity, "par_type": "nn", "shape": 1, "init": 0.0, "warmup_time": 0},
         }
-
-    def A(u, q):
-        '''
-            Evaluates the intermediate function A(u; q) based on the provided normalized constant, C(theta; q).
-            Since C(theta; q) = A(phi(theta; q)), A(u; q) = C(phi_inv(theta; q); q)
-        '''
-        theta = phi_inv(u, q)
-        return C(theta, q)
     
     def loglikelihood_loss(model, nn_output, data):
         X, y, delta = data
@@ -143,10 +136,10 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
         if(tf.math.is_nan( neg_loglik )):
             tf.print("loglik NAN:")
             tf.print("Aprime_u[nan]", Aprime_u[tf.math.is_nan(log_f_pop)] )
-            # tf.print("any tf.math.log( Aprime_u ) - tf.math.log( C_theta ) NAN:", tf.reduce_sum(tf.cast(tf.math.is_nan(tf.math.log( Aprime_u ) - tf.math.log( C_theta )), tf.int32) ))
-            # tf.print("tf.math.log( Aprime_u ):", tf.reduce_sum(tf.cast(tf.math.is_nan( tf.math.log( Aprime_u ) ), tf.int32) ))
-            # tf.print("any log_f_pop NAN:", tf.reduce_sum(tf.cast(tf.math.is_nan(log_f_pop), tf.int32) ))
-            # tf.print("any log_S_pop NAN:", tf.reduce_sum(tf.cast(tf.math.is_nan(log_S_pop), tf.int32) ))
+            tf.print("any tf.math.log( Aprime_u ) - tf.math.log( C_theta ) NAN:", tf.reduce_sum(tf.cast(tf.math.is_nan(tf.math.log( Aprime_u ) - tf.math.log( C_theta )), tf.int32) ))
+            tf.print("tf.math.log( Aprime_u ):", tf.reduce_sum(tf.cast(tf.math.is_nan( tf.math.log( Aprime_u ) ), tf.int32) ))
+            tf.print("any log_f_pop NAN:", tf.reduce_sum(tf.cast(tf.math.is_nan(log_f_pop), tf.int32) ))
+            tf.print("any log_S_pop NAN:", tf.reduce_sum(tf.cast(tf.math.is_nan(log_S_pop), tf.int32) ))
         
         return neg_loglik
 
@@ -225,8 +218,8 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
         p_train = tf.clip_by_value(p_train, eps, 1.0-eps)
         p_test = tf.clip_by_value(p_test, eps, 1.0-eps)
     
-        theta_train = self.C_inv( a0(q) / p_train, q )
-        theta_test = self.C_inv( a0(q) / p_test, q )
+        theta_train = self.C_inv( self.a0(q) / p_train, q )
+        theta_test = self.C_inv( self.a0(q) / p_test, q )
     
         S0_ts = pwexp.cdf(ts_grid, alpha, s, lower_tail = False)
         S0_train = pwexp.cdf(y_train, alpha, s, lower_tail = False)
@@ -242,8 +235,8 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
         A_u_train = self.A( u_train, q )
         A_u_test = self.A( u_test, q )
     
-        C_theta_train = C( theta_train, q )
-        C_theta_test = C( theta_test, q )
+        C_theta_train = self.C( theta_train, q )
+        C_theta_test = self.C( theta_test, q )
         
         S_ts_train = A_u_ts_train / C_theta_train
         S_ts_test = A_u_ts_test / C_theta_test
@@ -269,7 +262,22 @@ def build_mpscr_model(y, delta, input_dim, model_spec, seed = 10, n_cuts = 5):
             "s": self.s
         }
 
+    def S_pop(self, t):
+        """
+            Returns the predicted survival curves for all patients for the provided times
+        """
+        pass
+
+    def f_pop(self, t):
+        """
+            Returns the predicted density curves for all patients for the provided times
+        """
+        pass
+
     model.get_survival_cure = types.MethodType( get_survival_cure, model )
+    
+    model.S_pop = types.MethodType( S_pop, model )
+    model.f_pop = types.MethodType( f_pop, model )
     
     return model
 
@@ -317,6 +325,78 @@ class MPSPoisson:
 
         def sup(q):
             return tf.cast( np.arange(B), tf.float32 )
+
+        def Spop(t, p, q, alpha, s):
+            """
+                Obtain the populational survival function for all values of p given.
+                
+                Parameters:
+                    t: array of times to be evaluated ( shape (T,) )
+                    p: array of cure probabilities for each patient ( shape (n,) )
+                    q: constant value of the second parameter from the MPS family
+                    
+                This function returns a (T,n) matrix with the population survival function for all t values and patients with cure probabilities p.
+            """
+            # Ensure inputs are already properly unidimensional
+            t = tf.cast( tf.squeeze(t), tf.float32 )
+            p = tf.cast( tf.squeeze(p), tf.float32 )
+            
+            # Transpose the array of times for broadcasting
+            t = t[:,None]
+            
+            eps = tf.constant(1.0e-5, dtype = tf.float32)
+            p = tf.clip_by_value(p, eps, 1.0-eps)
+        
+            theta = self.C_inv( self.a0(q) / p, q )
+
+            # Parts to calculate the final survival curves
+            S0_t = pwexp.cdf(t, alpha, s, lower_tail = False)
+            u_t = S0_t * self.phi(theta, q)
+            A_u_t = self.A( u_t, q )
+            C_theta = self.C( theta, q )
+            # Final survival curve
+            S_t = A_u_t / C_theta        
+
+            return S_t
+
+        def fpop(t, p, q, alpha, s):
+            """
+                Obtain the populational density function for all values of p given.
+                
+                Parameters:
+                    t: array of times to be evaluated ( shape (T,) )
+                    p: array of cure probabilities for each patient ( shape (n,) )
+                    q: constant value of the second parameter from the MPS family
+                    
+                This function returns a (T,n) matrix with the population survival function for all t values and patients with cure probabilities p.
+            """
+            # Ensure inputs are already properly unidimensional
+            t = tf.cast( tf.squeeze(t), tf.float32 )
+            p = tf.cast( tf.squeeze(p), tf.float32 )
+            
+            # Transpose the array of times for broadcasting
+            t = t[:,None]
+            
+            eps = tf.constant(1.0e-5, dtype = tf.float32)
+            p = tf.clip_by_value(p, eps, 1.0-eps)
+        
+            theta = self.C_inv( self.a0(q) / p, q )
+
+            # Parts to calculate the final survival curves
+            S0_t = pwexp.cdf(t, alpha, s, lower_tail = False)
+            f0_t = pwexp.pdf(t, alpha, s)
+
+            u_t = S0_t * self.phi(theta, q)
+            with tf.GradientTape() as tape:
+                tape.watch(u_t)
+                A_u_t = self.A( u_t, q )
+                
+            Aprime_u_t = tape.gradient(A_u_t, u_t)
+            C_theta = self.C( theta, q )
+            # Final density curve
+            f_t = A_u_t / C_theta * f0_t * self.phi(theta, q)
+
+            return f_t
         
         self.a = a
         self.a0 = a0
@@ -330,6 +410,8 @@ class MPSPoisson:
         self.p_min = p_min
         self.p_max = p_max
         self.sup = sup
+        self.Spop = Spop
+        self.fpop = fpop
 
 
 class MPSBinomial:
@@ -483,7 +565,19 @@ class MPSLogarithmic:
             return tf.identity(u)
         
         def C(theta, q):
-            return -tf.math.log(1-theta) / theta
+            # Identify small values of theta
+            small_mask = tf.math.abs(theta) < 0.1
+            
+            # Just ensures standard will not produce NaNs over observations where Taylor expansion will be used
+            safe_theta = tf.where(small_mask, tf.constant(0.1, dtype = theta.dtype), theta)
+            standard = -tf.math.log(1 - safe_theta) / safe_theta
+
+            # Obtain the Taylor expansion for values of theta near zero to avoid numerical autodiff problems
+            taylor = 1.0 + theta / 2.0 + (theta**2) / 3.0 + (theta**3) / 4.0
+            
+            return tf.where(small_mask, taylor, standard)
+            
+            # return -tf.math.log(1-theta) / theta
         
         def C_inv(u, q):
             return 1 + tfp.math.lambertw(-u * tf.math.exp(-u)) / u
@@ -526,7 +620,7 @@ class MPSRGP:
             self.fixed_q = tf.cast(fixed_q, tf.float32)
         
         def log_a(m, q):
-            return -tf.math.log(m+1)
+            return (m-1)*tf.math.log( 1 + q*m ) - tf.math.lgamma(m+1)
 
         def a(m, q):
             return tf.math.exp( log_a(m, q) )
@@ -535,19 +629,19 @@ class MPSRGP:
             return tf.cast(1.0, tf.float32)
         
         def phi(theta, q):
-            return tf.identity(theta)
+            return theta * tf.math.exp(-q * theta)
         
         def log_phi(theta, q):
-            return tf.math.log(theta)
+            return tf.math.log(theta) - q * theta
                                
         def phi_inv(u, q):
-            return tf.identity(u)
+            return - tfp.math.lambertw( -q*u ) / q
         
         def C(theta, q):
-            return -tf.math.log(1-theta) / theta
+            return tf.math.exp(theta)
         
         def C_inv(u, q):
-            return 1 + tfp.math.lambertw(-u * tf.math.exp(-u)) / u
+            return tf.math.log(u)
         
         def A(u, q):
             theta = phi_inv(u, q)
@@ -572,7 +666,7 @@ class MPSRGP:
             # We allow q to vary between -1/3 and infinity.
             # That allows us to obtain an RGP(q) model with support from {0,1,2}
             # At its extreme, q = -1/2 and the support of the RGP distribution collapses to {0,1} (i.e. a Bernoulli)
-            # For q > -1/2, the support varies from {0,1,2}, {0,1,2,3}, ..., up to an infinite support when q > 0
+            # For q > -1/2, the support varies from {0,1,2}, {0,1,2,3}, ..., up to an infinite support when q >= 0
             # Specifically, fow q = 0, we recover the Poisson model
             return tf.math.softplus(q) - 1/2
         
