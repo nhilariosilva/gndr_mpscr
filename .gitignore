@@ -22,3 +22,5 @@ LICENSE
 *.jpg
 *.png
 *.jpeg
+OASIS Raw Data/**
+OASIS Data/**
