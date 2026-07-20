@@ -39,10 +39,9 @@ def initialize_alpha_s(t, delta, n_cuts = 6):
     s = tf.cast(s, tf.float32)
     return alpha0, s
 
-def build_mpscr_model(y, delta, input_dim, model_spec,
-                      s = None,
+def build_mpscr_model(y, delta, input_dim, model_spec, base_spec,
                       neural_network = None, neural_network_call = None, neural_network_call_nolast = None,
-                      seed = 10, n_cuts = 5):
+                      seed = 10):
     '''
         Structure the Two-parameter Modified Power Series distribution in the architecture required for the thetaflow package.
         A model_spec object is provided, which is aimed at completely specifying the modified power series model by providing its associated functions
@@ -76,23 +75,19 @@ def build_mpscr_model(y, delta, input_dim, model_spec,
     if(hasq):
         link_q = model_spec.link_q
         link_inv_q = model_spec.link_inv_q
-
-    if(s is None):
-        # Determine the cut points and initialize the values of the baseline piecewise exponential distribuion
-        _, s = initialize_alpha_s(y, delta, n_cuts = n_cuts)
     
     def softplus_inv(u):
         return tf.math.log(tf.math.exp(u) - 1)
     
     if(hasq):
         parameters = {
-            "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": n_cuts+1, "init": 1.0, "warmup_time": 0},
+            "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": base_spec.n_parameters, "init": 1.0, "warmup_time": 0},
             "q": {"link": link_q, "link_inv": link_inv_q, "par_type": "independent", "shape": 1, "init": 1.0, "warmup_time": 0},
             "raw_p": {"link": tf.identity, "link_inv": tf.identity, "par_type": "nn", "shape": 1, "init": 0.0, "warmup_time": 0},
         }
     else:
         parameters = {
-            "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": n_cuts+1, "init": 1.0, "warmup_time": 0},
+            "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": base_spec.n_parameters, "init": 1.0, "warmup_time": 0},
             "raw_p": {"link": tf.identity, "link_inv": tf.identity, "par_type": "nn", "shape": 1, "init": 0.0, "warmup_time": 0},
         }
     
@@ -118,10 +113,10 @@ def build_mpscr_model(y, delta, input_dim, model_spec,
         theta = C_inv( a0(q) / p, q )
 
         # Base survival function (piecewise exponential in this case)
-        S0 = pwexp.cdf(y, alpha, s, lower_tail = False)
-        h0 = pwexp.h(y, alpha, s)
-        log_S0 = pwexp.log_survival(y, alpha, s)
-        log_f0 = tf.math.log(h0) + log_S0
+        S0 = base_spec.survival(y, alpha)
+        log_h0 = base_spec.log_h(y, alpha)
+        log_S0 = tf.math.log( S0 )
+        log_f0 = log_h0 + log_S0
         
         C_theta = C( theta, q )
 
@@ -180,7 +175,6 @@ def build_mpscr_model(y, delta, input_dim, model_spec,
                         neural_network, neural_network_call,
                         neural_network_call_nolast, input_dim = input_dim, seed = seed)
     model.hasq = hasq
-    model.s = s
     model.a0 = a0
     model.phi = phi
     model.phi_inv = phi_inv
@@ -191,7 +185,7 @@ def build_mpscr_model(y, delta, input_dim, model_spec,
     model.A = A
     model.link_q = link_q
     model.link_inv_q = link_inv_q
-
+    
     def get_survival_cure(self, y_train, X_train, y_test, X_test, ngrid = 100):    
         pred_train = self.predict(X_train)
         pred_test = self.predict(X_test)
@@ -201,7 +195,6 @@ def build_mpscr_model(y, delta, input_dim, model_spec,
             q = self.predict("q")
         else:
             q = fixed_q
-        s = self.s
     
         ts_grid = np.linspace(0.0001 , np.max(np.concatenate([y_train, y_test])), ngrid)[:,None]
         
@@ -218,9 +211,9 @@ def build_mpscr_model(y, delta, input_dim, model_spec,
         theta_train = self.C_inv( self.a0(q) / p_train, q )
         theta_test = self.C_inv( self.a0(q) / p_test, q )
     
-        S0_ts = pwexp.cdf(ts_grid, alpha, s, lower_tail = False)
-        S0_train = pwexp.cdf(y_train, alpha, s, lower_tail = False)
-        S0_test = pwexp.cdf(y_test, alpha, s, lower_tail = False)
+        S0_ts = tf.cast( base_spec.survival(ts_grid, alpha), tf.float32 )
+        S0_train = tf.cast( base_spec.survival(y_train, alpha), tf.float32 )
+        S0_test = tf.cast( base_spec.survival(y_test, alpha), tf.float32 )
         
         u_ts_train = S0_ts * self.phi(theta_train, q)
         u_ts_test = S0_ts * self.phi(theta_test, q)
@@ -255,8 +248,7 @@ def build_mpscr_model(y, delta, input_dim, model_spec,
             "theta_test": theta_test,
             "p_train": p_train,
             "p_test": p_test,
-            "alpha": alpha,
-            "s": self.s
+            "alpha": alpha
         }
 
     def S_pop(self, t):
@@ -278,6 +270,71 @@ def build_mpscr_model(y, delta, input_dim, model_spec,
     return model
 
 B = 501
+
+class BasePiecewiseExp:
+
+    def __init__(self, n_cuts = 5, s = None, y = None, delta = None):
+        self.n_parameters = n_cuts + 1
+        if(s is None):
+            if(y is None or delta is None):
+                raise ValueError("Please, provide at least times and event indicators.")
+            _, s = initialize_alpha_s(y, delta, n_cuts = n_cuts)
+        self.s = s
+
+        def survival(y, alpha):
+            return pwexp.cdf(y, alpha, self.s, lower_tail = False)
+    
+        def log_survival(y, alpha):
+            return pwexp.log_survival(y, alpha, self.s)
+    
+        def h(y, alpha):
+            return pwexp.h(y, alpha, self.s)
+    
+        def log_h(y, alpha):
+            return tf.math.log( pwexp.h(y, alpha, self.s) )
+    
+        def log_f(y, alpha):
+            log_S0 = pwexp.log_survival(y, alpha, self.s)
+            log_h0 = tf.math.log( pwexp.h(y, alpha, self.s) )
+            return log_h0 + log_S0
+    
+        self.survival = survival
+        self.log_survival = log_survival
+        self.h = h
+        self.log_h = log_h
+        self.log_f = log_f
+
+class BaseWeibull:
+
+    def __init__(self):
+        self.n_parameters = 2
+
+        def survival(y, alpha):
+            return tf.math.exp( self.log_survival(y, alpha) )
+    
+        def log_survival(y, alpha):
+            k = alpha[0]
+            lam = alpha[1]
+            return -(y / lam)**k
+    
+        def h(y, alpha):
+            return tf.math.exp( self.log_h(y, alpha) )
+    
+        def log_h(y, alpha):
+            k = alpha[0]
+            lam = alpha[1]
+            return tf.math.log(k) - k * tf.math.log(lam) + (k-1)*tf.math.log(y)
+    
+        def log_f(y, alpha):
+            log_S0 = self.log_survival(y, alpha)
+            log_h0 = self.log_h(y, alpha)
+            return log_h0 + log_S0
+    
+        self.survival = survival
+        self.log_survival = log_survival
+        self.h = h
+        self.log_h = log_h
+        self.log_f = log_f
 
 class MPSPoisson:
 
@@ -321,78 +378,6 @@ class MPSPoisson:
 
         def sup(q):
             return tf.cast( np.arange(B), tf.float32 )
-
-        def Spop(t, p, q, alpha, s):
-            """
-                Obtain the populational survival function for all values of p given.
-                
-                Parameters:
-                    t: array of times to be evaluated ( shape (T,) )
-                    p: array of cure probabilities for each patient ( shape (n,) )
-                    q: constant value of the second parameter from the MPS family
-                    
-                This function returns a (T,n) matrix with the population survival function for all t values and patients with cure probabilities p.
-            """
-            # Ensure inputs are already properly unidimensional
-            t = tf.cast( tf.squeeze(t), tf.float32 )
-            p = tf.cast( tf.squeeze(p), tf.float32 )
-            
-            # Transpose the array of times for broadcasting
-            t = t[:,None]
-            
-            eps = tf.constant(1.0e-5, dtype = tf.float32)
-            p = tf.clip_by_value(p, eps, 1.0-eps)
-        
-            theta = self.C_inv( self.a0(q) / p, q )
-
-            # Parts to calculate the final survival curves
-            S0_t = pwexp.cdf(t, alpha, s, lower_tail = False)
-            u_t = S0_t * self.phi(theta, q)
-            A_u_t = self.A( u_t, q )
-            C_theta = self.C( theta, q )
-            # Final survival curve
-            S_t = A_u_t / C_theta        
-
-            return S_t
-
-        def fpop(t, p, q, alpha, s):
-            """
-                Obtain the populational density function for all values of p given.
-                
-                Parameters:
-                    t: array of times to be evaluated ( shape (T,) )
-                    p: array of cure probabilities for each patient ( shape (n,) )
-                    q: constant value of the second parameter from the MPS family
-                    
-                This function returns a (T,n) matrix with the population survival function for all t values and patients with cure probabilities p.
-            """
-            # Ensure inputs are already properly unidimensional
-            t = tf.cast( tf.squeeze(t), tf.float32 )
-            p = tf.cast( tf.squeeze(p), tf.float32 )
-            
-            # Transpose the array of times for broadcasting
-            t = t[:,None]
-            
-            eps = tf.constant(1.0e-5, dtype = tf.float32)
-            p = tf.clip_by_value(p, eps, 1.0-eps)
-        
-            theta = self.C_inv( self.a0(q) / p, q )
-
-            # Parts to calculate the final survival curves
-            S0_t = pwexp.cdf(t, alpha, s, lower_tail = False)
-            f0_t = pwexp.pdf(t, alpha, s)
-
-            u_t = S0_t * self.phi(theta, q)
-            with tf.GradientTape() as tape:
-                tape.watch(u_t)
-                A_u_t = self.A( u_t, q )
-                
-            Aprime_u_t = tape.gradient(A_u_t, u_t)
-            C_theta = self.C( theta, q )
-            # Final density curve
-            f_t = A_u_t / C_theta * f0_t * self.phi(theta, q)
-
-            return f_t
         
         self.a = a
         self.a0 = a0
@@ -406,8 +391,6 @@ class MPSPoisson:
         self.p_min = p_min
         self.p_max = p_max
         self.sup = sup
-        self.Spop = Spop
-        self.fpop = fpop
 
 
 class MPSBinomial:
