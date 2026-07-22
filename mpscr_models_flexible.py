@@ -28,7 +28,7 @@ import subprocess
 
 import thetaflow as thf
 
-import pwexp
+import pwexp_flexible as pwexp
 
 def initialize_alpha_s(t, delta, n_cuts = 6):
     alpha0 = np.ones(n_cuts + 1)
@@ -81,13 +81,13 @@ def build_mpscr_model(y, delta, input_dim, model_spec, base_spec,
     
     if(hasq):
         parameters = {
-            "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": base_spec.n_parameters, "init": 1.0, "warmup_time": 0},
+            "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "nn", "shape": base_spec.n_parameters, "init": 1.0, "warmup_time": 0},
             "q": {"link": link_q, "link_inv": link_inv_q, "par_type": "independent", "shape": 1, "init": 1.0, "warmup_time": 0},
             "raw_p": {"link": tf.identity, "link_inv": tf.identity, "par_type": "nn", "shape": 1, "init": 0.0, "warmup_time": 0},
         }
     else:
         parameters = {
-            "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": base_spec.n_parameters, "init": 1.0, "warmup_time": 0},
+            "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "nn", "shape": base_spec.n_parameters, "init": 1.0, "warmup_time": 0},
             "raw_p": {"link": tf.identity, "link_inv": tf.identity, "par_type": "nn", "shape": 1, "init": 0.0, "warmup_time": 0},
         }
     
@@ -95,8 +95,8 @@ def build_mpscr_model(y, delta, input_dim, model_spec, base_spec,
         X, y, delta = data
         
         # alpha is the vector of parameters from the base distribution (piecewise exponential in this case)
-        alpha = model.get_variable("alpha")
-
+        alpha = model.get_variable("alpha", nn_output)
+        
         if(model.hasq):
             # q is a constant parameter (e.g. dispersion of a Negative Binomial)
             q = model.get_variable("q")
@@ -131,6 +131,8 @@ def build_mpscr_model(y, delta, input_dim, model_spec, base_spec,
         
         loglik_terms = delta * log_f_pop + (1-delta) * log_S_pop
         neg_loglik = -tf.reduce_sum(loglik_terms)
+
+        # neg_loglik = tf.constant(10,dtype = tf.float32)
         
         return neg_loglik
 
@@ -186,21 +188,24 @@ def build_mpscr_model(y, delta, input_dim, model_spec, base_spec,
     model.link_q = link_q
     model.link_inv_q = link_inv_q
     
-    def get_survival_cure(self, y_train, X_train, y_test, X_test, ngrid = 100):    
+    def get_survival_cure(self, y_train, delta_train, X_train, y_test, delta_test, X_test, ngrid = 100):    
         pred_train = self.predict(X_train)
         pred_test = self.predict(X_test)
         
-        alpha = self.predict("alpha")
+        # alpha = self.predict("alpha")
+        alpha_train = pred_train["alpha"]
+        alpha_test = pred_test["alpha"]
+        
         if(self.hasq):
             q = self.predict("q")
         else:
             q = fixed_q
     
-        ts_grid = np.linspace(0.0001 , np.max(np.concatenate([y_train, y_test])), ngrid)[:,None]
+        ts_grid = np.linspace(0.0001 , np.max(np.concatenate([y_train, y_test])), ngrid)
         
         eps = tf.constant(1.0e-5, dtype = tf.float32)
-        raw_p_train = pred_train["raw_p"].numpy().flatten()
-        raw_p_test = pred_test["raw_p"].numpy().flatten()
+        raw_p_train = pred_train["raw_p"].numpy()
+        raw_p_test = pred_test["raw_p"].numpy()
 
         p_train = tf.math.sigmoid(raw_p_train) * (p_max(q) - p_min(q)) + p_min(q)
         p_test = tf.math.sigmoid(raw_p_test) * (p_max(q) - p_min(q)) + p_min(q)
@@ -211,12 +216,13 @@ def build_mpscr_model(y, delta, input_dim, model_spec, base_spec,
         theta_train = self.C_inv( self.a0(q) / p_train, q )
         theta_test = self.C_inv( self.a0(q) / p_test, q )
     
-        S0_ts = tf.cast( base_spec.survival(ts_grid, alpha), tf.float32 )
-        S0_train = tf.cast( base_spec.survival(y_train, alpha), tf.float32 )
-        S0_test = tf.cast( base_spec.survival(y_test, alpha), tf.float32 )
+        S0_ts_train = tf.cast( base_spec.survival(ts_grid, alpha_train), tf.float32 )
+        S0_ts_test = tf.cast( base_spec.survival(ts_grid, alpha_test), tf.float32 )
+        S0_train = tf.cast( base_spec.survival(y_train, alpha_train), tf.float32 )
+        S0_test = tf.cast( base_spec.survival(y_test, alpha_test), tf.float32 )
         
-        u_ts_train = S0_ts * self.phi(theta_train, q)
-        u_ts_test = S0_ts * self.phi(theta_test, q)
+        u_ts_train = S0_ts_train * self.phi(theta_train, q)
+        u_ts_test = S0_ts_test * self.phi(theta_test, q)
         u_train = S0_train * self.phi(theta_train, q)
         u_test = S0_test * self.phi(theta_test, q)
         
@@ -235,11 +241,24 @@ def build_mpscr_model(y, delta, input_dim, model_spec, base_spec,
         
         H_train = -np.log( S_train )
         H_test = -np.log( S_test )
-    
+
+        if(hasattr(y_train, "to_numpy")):
+            y_train = y_train.to_numpy()
+        if(hasattr(delta_train, "to_numpy")):
+            delta_train = delta_train.to_numpy()
+        if(hasattr(y_test, "to_numpy")):
+            y_test = y_test.to_numpy()
+        if(hasattr(delta_test, "to_numpy")):
+            delta_test = delta_test.to_numpy()
+        
         return {
             "ts_grid": ts_grid,
             "S_ts_train": S_ts_train,
             "S_ts_test": S_ts_test,
+            "y_train": y_train,
+            "y_test": y_test,
+            "delta_train": delta_train,
+            "delta_test": delta_test,
             "S_train": S_train,
             "S_test": S_test,
             "H_train": H_train,
@@ -248,20 +267,71 @@ def build_mpscr_model(y, delta, input_dim, model_spec, base_spec,
             "theta_test": theta_test,
             "p_train": p_train,
             "p_test": p_test,
-            "alpha": alpha
+            "alpha_train": alpha_train,
+            "alpha_test": alpha_test
         }
 
-    def S_pop(self, t):
+    def S_pop(self, t, X):
         """
             Returns the predicted survival curves for all patients for the provided times
         """
-        pass
+        pred = self.predict(X)
+        
+        alpha = pred["alpha"]
+        
+        if(self.hasq):
+            q = self.predict("q")
+        else:
+            q = fixed_q
+        
+        eps = tf.constant(1.0e-5, dtype = tf.float32)
+        raw_p = pred["raw_p"].numpy().flatten()
 
-    def f_pop(self, t):
+        p = tf.math.sigmoid(raw_p) * (p_max(q) - p_min(q)) + p_min(q)
+        p = tf.clip_by_value(p, eps, 1.0-eps)
+        theta = self.C_inv( self.a0(q) / p, q )
+        
+        S0_t = tf.cast( base_spec.survival(t, alpha), tf.float32 )
+        u_t = S0_t * self.phi(theta, q)        
+        A_u_t = self.A( u_t, q )
+        C_theta = self.C( theta, q )
+        
+        S_t = A_u_t / C_theta
+        
+        return S_t
+    
+    def f_pop(self, t, X):
         """
             Returns the predicted density curves for all patients for the provided times
         """
-        pass
+        pred = self.predict(X)
+        
+        alpha = pred["alpha"]
+        
+        if(self.hasq):
+            q = self.predict("q")
+        else:
+            q = fixed_q
+        
+        eps = tf.constant(1.0e-5, dtype = tf.float32)
+        raw_p = pred["raw_p"].numpy().flatten()
+
+        p = tf.math.sigmoid(raw_p) * (p_max(q) - p_min(q)) + p_min(q)
+        p = tf.clip_by_value(p, eps, 1.0-eps)
+        theta = self.C_inv( self.a0(q) / p, q )
+        
+        S0_t = tf.cast( base_spec.survival(t, alpha), tf.float32 )
+        f0_t = tf.cast( base_spec.pdf(t, alpha), tf.float32 )
+        
+        u_t = S0_t * self.phi(theta, q)
+        with tf.GradientTape() as tape:
+            tape.watch(u_t)
+            A_u_t = self.A( u_t, q )
+        Aprime_u_t = tape.gradient(A_u_t, u_t)
+        C_theta = self.C( theta, q )
+        f_t = A_u_t / C_theta * f0_t * self.phi(theta, q)
+        
+        return f_t
 
     model.get_survival_cure = types.MethodType( get_survival_cure, model )
     model.S_pop = types.MethodType( S_pop, model )
@@ -281,21 +351,27 @@ class BasePiecewiseExp:
             _, s = initialize_alpha_s(y, delta, n_cuts = n_cuts)
         self.s = s
 
-        def survival(y, alpha):
-            return pwexp.cdf(y, alpha, self.s, lower_tail = False)
+        def pdf(y, alpha, force_broadcasting = False):
+            return pwexp.pdf(y, alpha, self.s, force_broadcasting = force_broadcasting)
+
+        def log_pdf(y, alpha, force_broadcasting = False):
+            return tf.math.log( self.pdf(y,alpha, force_broadcasting = force_broadcasting) )
+        
+        def survival(y, alpha, force_broadcasting = False):
+            return pwexp.cdf(y, alpha, self.s, lower_tail = False, force_broadcasting = force_broadcasting)
     
-        def log_survival(y, alpha):
-            return pwexp.log_survival(y, alpha, self.s)
+        def log_survival(y, alpha, force_broadcasting = False):
+            return pwexp.log_survival(y, alpha, self.s, force_broadcasting = force_broadcasting)
     
-        def h(y, alpha):
-            return pwexp.h(y, alpha, self.s)
+        def h(y, alpha, force_broadcasting = False):
+            return pwexp.h(y, alpha, self.s, force_broadcasting = force_broadcasting)
     
-        def log_h(y, alpha):
-            return tf.math.log( pwexp.h(y, alpha, self.s) )
+        def log_h(y, alpha, force_broadcasting = False):
+            return tf.math.log( pwexp.h(y, alpha, self.s, force_broadcasting = force_broadcasting) )
     
-        def log_f(y, alpha):
-            log_S0 = pwexp.log_survival(y, alpha, self.s)
-            log_h0 = tf.math.log( pwexp.h(y, alpha, self.s) )
+        def log_f(y, alpha, force_broadcasting = False):
+            log_S0 = pwexp.log_survival(y, alpha, self.s, force_broadcasting = force_broadcasting)
+            log_h0 = tf.math.log( pwexp.h(y, alpha, self.s, force_broadcasting = force_broadcasting) )
             return log_h0 + log_S0
     
         self.survival = survival
@@ -309,6 +385,14 @@ class BaseWeibull:
     def __init__(self):
         self.n_parameters = 2
 
+        def pdf(y, alpha):
+            return tf.math.exp( self.log_pdf(y, alpha) )
+
+        def log_pdf(y, alpha):
+            k = alpha[0]
+            lam = alpha[1]
+            return tf.math.log(k) - k * tf.math.log(lam) + (k-1) * tf.math.log(y)
+        
         def survival(y, alpha):
             return tf.math.exp( self.log_survival(y, alpha) )
     

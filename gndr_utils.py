@@ -228,7 +228,7 @@ def average_kaplan_meier(ts_grid, S_ts, y, delta,
     km = lifelines.KaplanMeierFitter()
     
     km.fit(y, delta)
-    km.plot(ax = ax, ci_show = False, show_censors = False, label = "Kaplan-Meier", color = colors[0])
+    km.plot(ax = ax, ci_show = False, show_censors = False, label = "Kaplan-Meier", color = colors[0], ci_legend = False)
     ax.plot(ts_grid.flatten(), S_avg, color = "red", label = "Average survival curve")
     
     ax.set_ylim(0,1.05)
@@ -259,11 +259,11 @@ def average_kaplan_meier_train_test(ts_grid,
     km = lifelines.KaplanMeierFitter()
     
     km.fit(y_train, delta_train)
-    km.plot(ax = ax1, ci_show = False, show_censors = False, label = "Kaplan-Meier Train", color = colors[0])
+    km.plot(ax = ax1, ci_show = False, show_censors = False, label = "Kaplan-Meier Train", color = colors[0], ci_legend = False)
     ax1.plot(ts_grid.flatten(), S_avg_train, color = "red", label = "Average survival curve")
     
     km.fit(y_test, delta_test)
-    km.plot(ax = ax2, ci_show = False, show_censors = False, label = "Kaplan-Meier Test", color = colors[0])
+    km.plot(ax = ax2, ci_show = False, show_censors = False, label = "Kaplan-Meier Test", color = colors[0], ci_legend = False)
     ax2.plot(ts_grid.flatten(), S_avg_test, color = "red", label = "Average survival curve")
     
     ax1.set_ylim(0,1.05)
@@ -350,22 +350,22 @@ def split_risk_groups(ts_grid,
     km = lifelines.KaplanMeierFitter()
     
     km.fit(y_train[low_hazard_train], delta_train[low_hazard_train])
-    km.plot(ax = ax1, ci_show = False, show_censors = False, label = "Group 1 (lower risk)", color = colors[0])
+    km.plot(ax = ax1, ci_show = False, show_censors = False, label = "Group 1 (lower risk)", color = colors[0], ci_legend = False)
     ax1.plot(ts_grid.flatten(), S_low_hazard_avg_train, color = colors[0])
     
     km.fit(y_train[high_hazard_train], delta_train[high_hazard_train])
-    km.plot(ax = ax1, ci_show = False, show_censors = False, label = "Group 2 (higher risk)", color = colors[1])
+    km.plot(ax = ax1, ci_show = False, show_censors = False, label = "Group 2 (higher risk)", color = colors[1], ci_legend = False)
     ax1.plot(ts_grid.flatten(), S_high_hazard_avg_train, color = colors[1])
     
     ax1.set_ylim(0,1.05)
     ax1.set_title("Training set")
     
     km.fit(y_test[low_hazard_test], delta_test[low_hazard_test])
-    km.plot(ax = ax2, ci_show = False, show_censors = False, label = "Group 1 (lower risk)", color = colors[0])
+    km.plot(ax = ax2, ci_show = False, show_censors = False, label = "Group 1 (lower risk)", color = colors[0], ci_legend = False)
     ax2.plot(ts_grid.flatten(), S_low_hazard_avg_test, color = colors[0])
     
     km.fit(y_test[high_hazard_test], delta_test[high_hazard_test])
-    km.plot(ax = ax2, ci_show = False, show_censors = False, label = "Group 2 (higher risk)", color = colors[1])
+    km.plot(ax = ax2, ci_show = False, show_censors = False, label = "Group 2 (higher risk)", color = colors[1], ci_legend = False)
     ax2.plot(ts_grid.flatten(), S_high_hazard_avg_test, color = colors[1])
     
     ax2.set_ylim(0,1.05)
