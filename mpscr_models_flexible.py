@@ -39,9 +39,387 @@ def initialize_alpha_s(t, delta, n_cuts = 6):
     s = tf.cast(s, tf.float32)
     return alpha0, s
 
-def build_mpscr_model(y, delta, input_dim, model_spec, base_spec,
-                      neural_network = None, neural_network_call = None, neural_network_call_nolast = None,
-                      seed = 10):
+def build_simple_mpscr_model(y, delta, model_spec, base_spec, seed = 10):
+    '''
+        Structure the Two-parameter Modified Power Series distribution in the architecture of thetaflow, considering the
+        total absence of predicting variables. While the model below admits input data and a neural network structure as inputs,
+        the model build here simply considers all parameters as populational constants. We aim to use this model to show that
+        the image model in OASIS-3 is indeed capturing relevant patterns for prediction, capturing more than simply random noise.
+    '''
+    # Basic functions that define a specific distribution from the Two-Parameter Modified Power Series family 
+    a0 = model_spec.a0
+    phi = model_spec.phi
+    phi_inv = model_spec.phi_inv
+    C = model_spec.C
+    C_inv = model_spec.C_inv
+    # Functions of q to define the parameter space of the cure probability, which models theta directly
+    # In special cases of the MPS family, such as the Restricted Generalized Poisson (RGP) model,
+    # we have that, for a given value of q, theta varies in the range (0, |q|^{-1}),
+    # therefore, we have a varying parameter space, that must be updated with each new value of q
+    p_min = model_spec.p_min
+    p_max = model_spec.p_max
+    # If hasq is True, the model treats q as an unknown parameter to be estimated
+    hasq = model_spec.hasq
+    # If hasq is False, then q is treated as a known constant or is completely ignored
+    # In the first case, fixed_q represents that known value
+    fixed_q = model_spec.fixed_q
+    # If q is a trainable parameter, must specify its corresponding link function
+    link_q = None
+    link_inv_q = None
+    A = model_spec.A
+    if(hasq):
+        link_q = model_spec.link_q
+        link_inv_q = model_spec.link_inv_q
+
+    def softplus_inv(u):
+        return tf.math.log(tf.math.exp(u) - 1)
+    
+    if(hasq):
+        parameters = {
+            "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": base_spec.n_parameters, "init": 1.0, "warmup_time": 0},
+            "q": {"link": link_q, "link_inv": link_inv_q, "par_type": "independent", "shape": 1, "init": 1.0, "warmup_time": 0},
+            "raw_p": {"link": tf.identity, "link_inv": tf.identity, "par_type": "independent", "shape": 1, "init": 0.0, "warmup_time": 0},
+        }
+    else:
+        parameters = {
+            "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": base_spec.n_parameters, "init": 1.0, "warmup_time": 0},
+            "raw_p": {"link": tf.identity, "link_inv": tf.identity, "par_type": "independent", "shape": 1, "init": 0.0, "warmup_time": 0},
+        }
+    
+    def loglikelihood_loss(model, nn_output, data):
+        X, y, delta = data
+        
+        # alpha is the vector of parameters from the base distribution (piecewise exponential in this case)
+        alpha = model.get_variable("alpha")[None,:]
+        
+        if(model.hasq):
+            # q is a constant parameter (e.g. dispersion of a Negative Binomial)
+            q = model.get_variable("q")
+        else:
+            q = fixed_q
+            
+        # Theta represents the lead parameter of the model (e.g. scale of a Negative Binomial)
+        raw_p = model.get_variable("raw_p")
+        p = tf.math.sigmoid(raw_p) * (p_max(q) - p_min(q)) + p_min(q)
+        
+        eps = tf.constant(1.0e-4, dtype = tf.float32)
+        y = tf.clip_by_value(y, eps, np.inf)
+        p = tf.clip_by_value(p, eps, 1.0-eps)
+        
+        theta = C_inv( a0(q) / p, q )
+        
+        # Base survival function (piecewise exponential in this case)
+        S0 = tf.reshape( base_spec.survival(y, alpha), [-1,1] )
+        log_h0 = tf.reshape( base_spec.log_h(y, alpha), [-1,1] )
+        log_S0 = tf.math.log( S0 )
+        log_f0 = log_h0 + log_S0
+
+        C_theta = C( theta, q )
+        
+        u = S0 * phi(theta, q)
+        with tf.GradientTape() as tape:
+            tape.watch(u)
+            A_u = A( u, q )
+
+        log_S_pop = tf.math.log( A_u ) - tf.math.log( C_theta )
+        Aprime_u = tape.gradient(A_u, u)
+        log_f_pop = tf.math.log( Aprime_u ) - tf.math.log( C_theta ) + log_f0 + tf.math.log( phi(theta, q) )
+
+        loglik_terms = delta * log_f_pop + (1-delta) * log_S_pop
+        
+        neg_loglik = -tf.reduce_sum(loglik_terms)
+        
+        return neg_loglik
+
+    model = thf.ModelNN(parameters, loglikelihood_loss,
+                        None, None, None,
+                        input_dim = (1,), seed = seed)
+    model.hasq = hasq
+    model.a0 = a0
+    model.phi = phi
+    model.phi_inv = phi_inv
+    model.C = C
+    model.C_inv = C_inv
+    model.p_min = p_min
+    model.p_max = p_max
+    model.A = A
+    model.link_q = link_q
+    model.link_inv_q = link_inv_q
+    
+    def get_survival_cure(self, y_train, delta_train, y_test, delta_test, ngrid = 100):    
+        alpha = self.predict("alpha")[None,:]
+        
+        if(self.hasq):
+            q = self.predict("q")
+        else:
+            q = fixed_q
+    
+        ts_grid = np.linspace(0.0001 , np.max(np.concatenate([y_train, y_test])), ngrid)
+        
+        eps = tf.constant(1.0e-5, dtype = tf.float32)
+        raw_p = self.predict("raw_p")
+
+        p = tf.math.sigmoid(raw_p) * (self.p_max(q) - self.p_min(q)) + self.p_min(q)
+        p = tf.clip_by_value(p, eps, 1.0-eps).numpy()
+    
+        theta = self.C_inv( self.a0(q) / p, q )
+    
+        S0_ts = tf.cast( base_spec.survival(ts_grid, alpha), tf.float32 )
+        S0_train = tf.cast( base_spec.survival(y_train, alpha), tf.float32 )
+        S0_test = tf.cast( base_spec.survival(y_test, alpha), tf.float32 )
+        
+        u_ts = S0_ts * self.phi(theta, q)
+        u_train = S0_train * self.phi(theta, q)
+        u_test = S0_test * self.phi(theta, q)
+        
+        A_u_ts = self.A( u_ts, q )
+        A_u_train = self.A( u_train, q )
+        A_u_test = self.A( u_test, q )
+    
+        C_theta = self.C( theta, q )
+        
+        S_ts_train = A_u_ts / C_theta
+        S_ts_test = A_u_ts / C_theta
+        S_train = A_u_train / C_theta
+        S_test = A_u_test / C_theta
+        
+        H_train = -np.log( S_train )
+        H_test = -np.log( S_test )
+
+        if(hasattr(y_train, "to_numpy")):
+            y_train = y_train.to_numpy()
+        if(hasattr(delta_train, "to_numpy")):
+            delta_train = delta_train.to_numpy()
+        if(hasattr(y_test, "to_numpy")):
+            y_test = y_test.to_numpy()
+        if(hasattr(delta_test, "to_numpy")):
+            delta_test = delta_test.to_numpy()
+
+        results_dict = {
+            "ts_grid": ts_grid,
+            "S_ts_train": S_ts_train,
+            "S_ts_test": S_ts_test,
+            "y_train": y_train,
+            "y_test": y_test,
+            "delta_train": delta_train,
+            "delta_test": delta_test,
+            "S_train": S_train,
+            "S_test": S_test,
+            "H_train": H_train,
+            "H_test": H_test,
+            "theta_train": theta,
+            "theta_test": theta,
+            "p_train": p,
+            "p_test": p,
+            "alpha": alpha
+        }
+        # Runs through all elements in the results dictionary and convert them to numpy, if possible
+        for key in results_dict:
+            if(hasattr(results_dict[key], "to_numpy")):
+                results_dict[key] = results_dict[key].to_numpy()
+            if(hasattr(results_dict[key], "numpy")):
+                results_dict[key] = results_dict[key].numpy()
+        
+        return results_dict
+    
+    model.get_survival_cure = types.MethodType( get_survival_cure, model )
+    
+    return model
+
+
+def build_medium_mpscr_model(y, delta, input_dim, model_spec, base_spec,
+                             neural_network = None, neural_network_call = None, neural_network_call_nolast = None,
+                             seed = 10):
+    """
+        Structure the Two-parameter Modified Power Series distribution promotion time cure model using the thetaflow package.
+        
+        Here, we consider the base distribution's parameter vector alpha is a global constant and only the cure probability of each
+        patient is modeled according to an arbitrary neural network.
+    """
+    
+    # Basic functions that define a specific distribution from the Two-Parameter Modified Power Series family 
+    a0 = model_spec.a0
+    phi = model_spec.phi
+    phi_inv = model_spec.phi_inv
+    C = model_spec.C
+    C_inv = model_spec.C_inv
+    # Functions of q to define the parameter space of the cure probability, which models theta directly
+    # In special cases of the MPS family, such as the Restricted Generalized Poisson (RGP) model,
+    # we have that, for a given value of q, theta varies in the range (0, |q|^{-1}),
+    # therefore, we have a varying parameter space, that must be updated with each new value of q
+    p_min = model_spec.p_min
+    p_max = model_spec.p_max
+    # If hasq is True, the model treats q as an unknown parameter to be estimated
+    hasq = model_spec.hasq
+    # If hasq is False, then q is treated as a known constant or is completely ignored
+    # In the first case, fixed_q represents that known value
+    fixed_q = model_spec.fixed_q
+    # If q is a trainable parameter, must specify its corresponding link function
+    link_q = None
+    link_inv_q = None
+    A = model_spec.A
+    if(hasq):
+        link_q = model_spec.link_q
+        link_inv_q = model_spec.link_inv_q
+    
+    def softplus_inv(u):
+        return tf.math.log(tf.math.exp(u) - 1)
+    
+    if(hasq):
+        parameters = {
+            "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": base_spec.n_parameters, "init": 1.0, "warmup_time": 0},
+            "q": {"link": link_q, "link_inv": link_inv_q, "par_type": "independent", "shape": 1, "init": 1.0, "warmup_time": 0},
+            "raw_p": {"link": tf.identity, "link_inv": tf.identity, "par_type": "nn", "shape": 1, "init": 0.0, "warmup_time": 0},
+        }
+    else:
+        parameters = {
+            "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": base_spec.n_parameters, "init": 1.0, "warmup_time": 0},
+            "raw_p": {"link": tf.identity, "link_inv": tf.identity, "par_type": "nn", "shape": 1, "init": 0.0, "warmup_time": 0},
+        }
+    
+    def loglikelihood_loss(model, nn_output, data):
+        X, y, delta = data
+        
+        # alpha is the vector of parameters from the base distribution (piecewise exponential in this case)
+        alpha = model.get_variable("alpha")[None,:]
+
+        if(model.hasq):
+            # q is a constant parameter (e.g. dispersion of a Negative Binomial)
+            q = model.get_variable("q")
+        else:
+            q = fixed_q
+        # Theta represents the lead parameter of the model (e.g. scale of a Negative Binomial)
+        raw_p = model.get_variable("raw_p", nn_output)
+        p = tf.math.sigmoid(raw_p) * (p_max(q) - p_min(q)) + p_min(q)
+        
+        eps = tf.constant(1.0e-4, dtype = tf.float32)
+        y = tf.clip_by_value(y, eps, np.inf)
+        p = tf.clip_by_value(p, eps, 1.0-eps)
+        
+        theta = C_inv( a0(q) / p, q )
+        
+        # Base survival function (piecewise exponential in this case)
+        S0 = tf.reshape( base_spec.survival(y, alpha), [-1,1] )
+        log_h0 = tf.reshape( base_spec.log_h(y, alpha), [-1,1] )        
+        log_S0 = tf.math.log( S0 )
+        log_f0 = log_h0 + log_S0
+        
+        C_theta = C( theta, q )
+
+        u = S0 * phi(theta, q)
+        with tf.GradientTape() as tape:
+            tape.watch(u)
+            A_u = A( u, q )
+        
+        log_S_pop = tf.math.log( A_u ) - tf.math.log( C_theta )
+        Aprime_u = tape.gradient(A_u, u)
+        log_f_pop = tf.math.log( Aprime_u ) - tf.math.log( C_theta ) + log_f0 + tf.math.log( phi(theta, q) )
+        
+        loglik_terms = delta * log_f_pop + (1-delta) * log_S_pop
+        neg_loglik = -tf.reduce_sum(loglik_terms)
+        
+        return neg_loglik
+
+    model = thf.ModelNN(parameters, loglikelihood_loss,
+                        neural_network, neural_network_call,
+                        neural_network_call_nolast, input_dim = input_dim, seed = seed)
+    model.hasq = hasq
+    model.a0 = a0
+    model.phi = phi
+    model.phi_inv = phi_inv
+    model.C = C
+    model.C_inv = C_inv
+    model.p_min = p_min
+    model.p_max = p_max
+    model.A = A
+    model.link_q = link_q
+    model.link_inv_q = link_inv_q
+    
+    def get_survival_cure(self, y_train, delta_train, X_train, y_test, delta_test, X_test, ngrid = 100):    
+        pred_train = self.predict(X_train)
+        pred_test = self.predict(X_test)
+        
+        alpha = self.predict("alpha")[None,:]
+        if(self.hasq):
+            q = self.predict("q")
+        else:
+            q = fixed_q
+    
+        ts_grid = np.linspace(0.0001 , np.max(np.concatenate([y_train, y_test])), ngrid)[:,None]
+        
+        eps = tf.constant(1.0e-5, dtype = tf.float32)
+        raw_p_train = pred_train["raw_p"].numpy()
+        raw_p_test = pred_test["raw_p"].numpy()
+
+        p_train = tf.math.sigmoid(raw_p_train) * (self.p_max(q) - self.p_min(q)) + self.p_min(q)
+        p_test = tf.math.sigmoid(raw_p_test) * (self.p_max(q) - self.p_min(q)) + self.p_min(q)
+
+        p_train = tf.clip_by_value(p_train, eps, 1.0-eps)
+        p_test = tf.clip_by_value(p_test, eps, 1.0-eps)
+    
+        theta_train = self.C_inv( self.a0(q) / p_train, q )
+        theta_test = self.C_inv( self.a0(q) / p_test, q )
+    
+        S0_ts = tf.cast( base_spec.survival(ts_grid, alpha), tf.float32 )
+        S0_train = tf.cast( base_spec.survival(y_train, alpha), tf.float32 )
+        S0_test = tf.cast( base_spec.survival(y_test, alpha), tf.float32 )
+        
+        u_ts_train = S0_ts * self.phi(theta_train, q)
+        u_ts_test = S0_ts * self.phi(theta_test, q)
+        u_train = S0_train * self.phi(theta_train, q)
+        u_test = S0_test * self.phi(theta_test, q)
+        
+        A_u_ts_train = self.A( u_ts_train, q )
+        A_u_ts_test = self.A( u_ts_test, q )
+        A_u_train = self.A( u_train, q )
+        A_u_test = self.A( u_test, q )
+    
+        C_theta_train = self.C( theta_train, q )
+        C_theta_test = self.C( theta_test, q )
+        
+        S_ts_train = A_u_ts_train / C_theta_train
+        S_ts_test = A_u_ts_test / C_theta_test
+        S_train = A_u_train / C_theta_train
+        S_test = A_u_test / C_theta_test
+        
+        H_train = -np.log( S_train )
+        H_test = -np.log( S_test )
+    
+        results_dict = {
+            "ts_grid": ts_grid,
+            "S_ts_train": S_ts_train,
+            "S_ts_test": S_ts_test,
+            "y_train":y_train,
+            "y_test": y_test,
+            "delta_train": delta_train,
+            "delta_test": delta_test,
+            "S_train": S_train,
+            "S_test": S_test,
+            "H_train": H_train,
+            "H_test": H_test,
+            "theta_train": theta_train,
+            "theta_test": theta_test,
+            "p_train": p_train,
+            "p_test": p_test,
+            "alpha": alpha
+        }
+        # Runs through all elements in the results dictionary and convert them to numpy, if possible
+        for key in results_dict:
+            if(hasattr(results_dict[key], "to_numpy")):
+                results_dict[key] = results_dict[key].to_numpy()
+            if(hasattr(results_dict[key], "numpy")):
+                results_dict[key] = results_dict[key].numpy()
+        
+        return results_dict
+
+    model.get_survival_cure = types.MethodType( get_survival_cure, model )
+    
+    return model
+
+
+def build_flexible_mpscr_model(y, delta, input_dim, model_spec, base_spec,
+                               neural_network = None, neural_network_call = None, neural_network_call_nolast = None,
+                               seed = 10):
     '''
         Structure the Two-parameter Modified Power Series distribution in the architecture required for the thetaflow package.
         A model_spec object is provided, which is aimed at completely specifying the modified power series model by providing its associated functions
@@ -119,7 +497,7 @@ def build_mpscr_model(y, delta, input_dim, model_spec, base_spec,
         log_f0 = log_h0 + log_S0
         
         C_theta = C( theta, q )
-
+            
         u = S0 * phi(theta, q)
         with tf.GradientTape() as tape:
             tape.watch(u)
@@ -131,47 +509,8 @@ def build_mpscr_model(y, delta, input_dim, model_spec, base_spec,
         
         loglik_terms = delta * log_f_pop + (1-delta) * log_S_pop
         neg_loglik = -tf.reduce_sum(loglik_terms)
-
-        # neg_loglik = tf.constant(10,dtype = tf.float32)
         
         return neg_loglik
-
-    if(neural_network is None or neural_network_call is None or neural_network_call_nolast is None):
-        def neural_network(model, seed = None):
-            initializer = initializers.GlorotNormal(seed = seed)
-            model.dense1 = layers.Dense(
-                units = 16,
-                activation = "softplus",
-                kernel_initializer = initializer,
-                use_bias = True,
-                dtype = tf.float32
-            )
-            model.dense2 = layers.Dense(
-                units = 8,
-                activation = "softplus",
-                kernel_initializer = initializer,
-                use_bias = True,
-                dtype = tf.float32
-            )
-            model.output_layer = layers.Dense(
-                units = 1,
-                activation = None,
-                use_bias = True,
-                kernel_initializer = initializer,
-                dtype = tf.float32
-            )
-        
-        def neural_network_call(model, x_input, training = False):
-            x = model.dense1(x_input)
-            x = model.dense2(x)
-            x = model.output_layer(x)
-            return x
-        
-        def neural_network_call_nolast(model, x_input):
-            x = model.dense1(x_input)
-            x = model.dense2(x)
-            x = model.dense3(x)
-            return x
 
     model = thf.ModelNN(parameters, loglikelihood_loss,
                         neural_network, neural_network_call,
@@ -207,11 +546,11 @@ def build_mpscr_model(y, delta, input_dim, model_spec, base_spec,
         raw_p_train = pred_train["raw_p"].numpy()
         raw_p_test = pred_test["raw_p"].numpy()
 
-        p_train = tf.math.sigmoid(raw_p_train) * (p_max(q) - p_min(q)) + p_min(q)
-        p_test = tf.math.sigmoid(raw_p_test) * (p_max(q) - p_min(q)) + p_min(q)
+        p_train = tf.math.sigmoid(raw_p_train) * (self.p_max(q) - self.p_min(q)) + self.p_min(q)
+        p_test = tf.math.sigmoid(raw_p_test) * (self.p_max(q) - self.p_min(q)) + self.p_min(q)
 
-        p_train = tf.clip_by_value(p_train, eps, 1.0-eps)
-        p_test = tf.clip_by_value(p_test, eps, 1.0-eps)
+        p_train = tf.clip_by_value(p_train, eps, 1.0-eps).numpy()
+        p_test = tf.clip_by_value(p_test, eps, 1.0-eps).numpy()
     
         theta_train = self.C_inv( self.a0(q) / p_train, q )
         theta_test = self.C_inv( self.a0(q) / p_test, q )
@@ -242,16 +581,7 @@ def build_mpscr_model(y, delta, input_dim, model_spec, base_spec,
         H_train = -np.log( S_train )
         H_test = -np.log( S_test )
 
-        if(hasattr(y_train, "to_numpy")):
-            y_train = y_train.to_numpy()
-        if(hasattr(delta_train, "to_numpy")):
-            delta_train = delta_train.to_numpy()
-        if(hasattr(y_test, "to_numpy")):
-            y_test = y_test.to_numpy()
-        if(hasattr(delta_test, "to_numpy")):
-            delta_test = delta_test.to_numpy()
-        
-        return {
+        results_dict = {
             "ts_grid": ts_grid,
             "S_ts_train": S_ts_train,
             "S_ts_test": S_ts_test,
@@ -270,72 +600,16 @@ def build_mpscr_model(y, delta, input_dim, model_spec, base_spec,
             "alpha_train": alpha_train,
             "alpha_test": alpha_test
         }
-
-    def S_pop(self, t, X):
-        """
-            Returns the predicted survival curves for all patients for the provided times
-        """
-        pred = self.predict(X)
+        # Runs through all elements in the results dictionary and convert them to numpy, if possible
+        for key in results_dict:
+            if(hasattr(results_dict[key], "to_numpy")):
+                results_dict[key] = results_dict[key].to_numpy()
+            if(hasattr(results_dict[key], "numpy")):
+                results_dict[key] = results_dict[key].numpy()
         
-        alpha = pred["alpha"]
-        
-        if(self.hasq):
-            q = self.predict("q")
-        else:
-            q = fixed_q
-        
-        eps = tf.constant(1.0e-5, dtype = tf.float32)
-        raw_p = pred["raw_p"].numpy().flatten()
-
-        p = tf.math.sigmoid(raw_p) * (p_max(q) - p_min(q)) + p_min(q)
-        p = tf.clip_by_value(p, eps, 1.0-eps)
-        theta = self.C_inv( self.a0(q) / p, q )
-        
-        S0_t = tf.cast( base_spec.survival(t, alpha), tf.float32 )
-        u_t = S0_t * self.phi(theta, q)        
-        A_u_t = self.A( u_t, q )
-        C_theta = self.C( theta, q )
-        
-        S_t = A_u_t / C_theta
-        
-        return S_t
-    
-    def f_pop(self, t, X):
-        """
-            Returns the predicted density curves for all patients for the provided times
-        """
-        pred = self.predict(X)
-        
-        alpha = pred["alpha"]
-        
-        if(self.hasq):
-            q = self.predict("q")
-        else:
-            q = fixed_q
-        
-        eps = tf.constant(1.0e-5, dtype = tf.float32)
-        raw_p = pred["raw_p"].numpy().flatten()
-
-        p = tf.math.sigmoid(raw_p) * (p_max(q) - p_min(q)) + p_min(q)
-        p = tf.clip_by_value(p, eps, 1.0-eps)
-        theta = self.C_inv( self.a0(q) / p, q )
-        
-        S0_t = tf.cast( base_spec.survival(t, alpha), tf.float32 )
-        f0_t = tf.cast( base_spec.pdf(t, alpha), tf.float32 )
-        
-        u_t = S0_t * self.phi(theta, q)
-        with tf.GradientTape() as tape:
-            tape.watch(u_t)
-            A_u_t = self.A( u_t, q )
-        Aprime_u_t = tape.gradient(A_u_t, u_t)
-        C_theta = self.C( theta, q )
-        f_t = A_u_t / C_theta * f0_t * self.phi(theta, q)
-        
-        return f_t
+        return results_dict
 
     model.get_survival_cure = types.MethodType( get_survival_cure, model )
-    model.S_pop = types.MethodType( S_pop, model )
-    model.f_pop = types.MethodType( f_pop, model )
     
     return model
 

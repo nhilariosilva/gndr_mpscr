@@ -214,7 +214,7 @@ def plot_model_convergence(thf_model, ax1 = None, ax2 = None, ax3 = None, ax4 = 
 
 def average_kaplan_meier(ts_grid, S_ts, y, delta,
                          show_individual = False, ax = None):
-    S_avg = np.mean(S_ts, axis = 1)
+    S_avg = np.mean(S_ts, axis = 0)
     
     if(ax is None):
         fig, ax = plt.subplots(nrows = 1, ncols = 1, figsize = (8,6))
@@ -222,14 +222,14 @@ def average_kaplan_meier(ts_grid, S_ts, y, delta,
     colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
     
     if(show_individual):
-        for j in range(S_ts.shape[1]):
-            ax.plot(ts_grid, S_ts[:,j], color = "black", alpha = 0.2, linewidth = 0.8)
+        for j in range(S_ts.shape[0]):
+            ax.plot(ts_grid, S_ts[j,:], color = "black", alpha = 0.2, linewidth = 0.8)
     
     km = lifelines.KaplanMeierFitter()
     
     km.fit(y, delta)
-    km.plot(ax = ax, ci_show = False, show_censors = False, label = "Kaplan-Meier", color = colors[0], ci_legend = False)
-    ax.plot(ts_grid.flatten(), S_avg, color = "red", label = "Average survival curve")
+    km.plot(ax = ax, ci_show = False, show_censors = False, label = "Kaplan-Meier", color = colors[0], legend = False)
+    ax.plot(ts_grid, S_avg, color = "red", label = "Average survival curve")
     
     ax.set_ylim(0,1.05)
     ax.set_title("Training set")
@@ -239,8 +239,8 @@ def average_kaplan_meier_train_test(ts_grid,
                                     y_train, delta_train, y_test, delta_test,
                                     show_individual = False, ax1 = None, ax2 = None):
 
-    S_avg_train = np.mean(S_ts_train, axis = 1)
-    S_avg_test = np.mean(S_ts_test, axis = 1)
+    S_avg_train = np.mean(S_ts_train, axis = 0)
+    S_avg_test = np.mean(S_ts_test, axis = 0)
     
     if(ax1 is None or ax2 is None):
         fig, ax = plt.subplots(nrows = 1, ncols = 2, figsize = (12,6))
@@ -250,21 +250,21 @@ def average_kaplan_meier_train_test(ts_grid,
     colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
     
     if(show_individual):
-        for j in range(S_ts_train.shape[1]):
-            ax1.plot(ts_grid, S_ts_train[:,j], color = "black", alpha = 0.2, linewidth = 0.8)
+        for j in range(S_ts_train.shape[0]):
+            ax1.plot(ts_grid, S_ts_train[j,:], color = "black", alpha = 0.2, linewidth = 0.8)
         
-        for j in range(S_ts_test.shape[1]):
-            ax2.plot(ts_grid, S_ts_test[:,j], color = "black", alpha = 0.2, linewidth = 0.8)
+        for j in range(S_ts_test.shape[0]):
+            ax2.plot(ts_grid, S_ts_test[j,:], color = "black", alpha = 0.2, linewidth = 0.8)
     
     km = lifelines.KaplanMeierFitter()
     
     km.fit(y_train, delta_train)
-    km.plot(ax = ax1, ci_show = False, show_censors = False, label = "Kaplan-Meier Train", color = colors[0], ci_legend = False)
-    ax1.plot(ts_grid.flatten(), S_avg_train, color = "red", label = "Average survival curve")
+    km.plot(ax = ax1, ci_show = False, show_censors = False, color = colors[0], legend = False)
+    ax1.plot(ts_grid, S_avg_train, color = "red")
     
     km.fit(y_test, delta_test)
-    km.plot(ax = ax2, ci_show = False, show_censors = False, label = "Kaplan-Meier Test", color = colors[0], ci_legend = False)
-    ax2.plot(ts_grid.flatten(), S_avg_test, color = "red", label = "Average survival curve")
+    km.plot(ax = ax2, ci_show = False, show_censors = False, color = colors[0], legend = False)
+    ax2.plot(ts_grid, S_avg_test, color = "red")
     
     ax1.set_ylim(0,1.05)
     ax1.set_title("Training set")
@@ -350,22 +350,22 @@ def split_risk_groups(ts_grid,
     km = lifelines.KaplanMeierFitter()
     
     km.fit(y_train[low_hazard_train], delta_train[low_hazard_train])
-    km.plot(ax = ax1, ci_show = False, show_censors = False, label = "Group 1 (lower risk)", color = colors[0], ci_legend = False)
+    km.plot(ax = ax1, ci_show = False, show_censors = False, label = "Group 1 (lower risk)", color = colors[0], legend = False)
     ax1.plot(ts_grid.flatten(), S_low_hazard_avg_train, color = colors[0])
     
     km.fit(y_train[high_hazard_train], delta_train[high_hazard_train])
-    km.plot(ax = ax1, ci_show = False, show_censors = False, label = "Group 2 (higher risk)", color = colors[1], ci_legend = False)
+    km.plot(ax = ax1, ci_show = False, show_censors = False, label = "Group 2 (higher risk)", color = colors[1], legend = False)
     ax1.plot(ts_grid.flatten(), S_high_hazard_avg_train, color = colors[1])
     
     ax1.set_ylim(0,1.05)
     ax1.set_title("Training set")
     
     km.fit(y_test[low_hazard_test], delta_test[low_hazard_test])
-    km.plot(ax = ax2, ci_show = False, show_censors = False, label = "Group 1 (lower risk)", color = colors[0], ci_legend = False)
+    km.plot(ax = ax2, ci_show = False, show_censors = False, label = "Group 1 (lower risk)", color = colors[0], legend = False)
     ax2.plot(ts_grid.flatten(), S_low_hazard_avg_test, color = colors[0])
     
     km.fit(y_test[high_hazard_test], delta_test[high_hazard_test])
-    km.plot(ax = ax2, ci_show = False, show_censors = False, label = "Group 2 (higher risk)", color = colors[1], ci_legend = False)
+    km.plot(ax = ax2, ci_show = False, show_censors = False, label = "Group 2 (higher risk)", color = colors[1], legend = False)
     ax2.plot(ts_grid.flatten(), S_high_hazard_avg_test, color = colors[1])
     
     ax2.set_ylim(0,1.05)
@@ -373,7 +373,6 @@ def split_risk_groups(ts_grid,
     
     plt.show()
 
-    
 def compute_randomized_residuals_censoring(survival_y, delta, seed = 42):
     np.random.seed(seed)
 

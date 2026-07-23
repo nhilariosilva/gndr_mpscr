@@ -33,9 +33,17 @@ def h(t, alpha, s, force_broadcasting = False):
     alpha = tf.cast(alpha, tf.float64)
     s = tf.cast(s, tf.float64)
 
-    # If dimensions of alpha array and t do not match, must use broadcasting
-    if(alpha.shape[0] != t.shape[0]):
-        force_broadcasting = True
+    if(alpha.shape[0] is not None):
+        # If dimensions of alpha array and t exist and do not match, must use broadcasting
+        if(t.shape[0] is not None and alpha.shape[0] != t.shape[0]):
+            force_broadcasting = True
+
+        # If alpha is a [1,k] array and t [n,1], broadcasting is always expected
+        # If t is [1,1], then broadcasting would not be necessary, but as a standard implementation,
+        # we can still consider broadcasting here, leading to a 2d array as result.
+        # That implementation may also work when t is shape [None,1], as applied by tensorflow to map the operations in the Graph
+        if(alpha.shape[0] == 1):
+            force_broadcasting = True
     
     if(not force_broadcasting):
         t = tf.reshape(tf.cast(t, tf.float64), [-1])
@@ -93,8 +101,16 @@ def ch(t, alpha, s, force_broadcasting = False):
     alpha = tf.cast(alpha, tf.float64)
     s = tf.cast(s, tf.float64)
 
-    if alpha.shape[0] is not None and t.shape[0] is not None:
-        if alpha.shape[0] != t.shape[0]:
+    if(alpha.shape[0] is not None):
+        # If dimensions of alpha array and t exist and do not match, must use broadcasting
+        if(t.shape[0] is not None and alpha.shape[0] != t.shape[0]):
+            force_broadcasting = True
+
+        # If alpha is a [1,k] array and t [n,1], broadcasting is always expected
+        # If t is [1,1], then broadcasting would not be necessary, but as a standard implementation,
+        # we can still consider broadcasting here, leading to a 2d array as result.
+        # That implementation may also work when t is shape [None,1], as applied by tensorflow to map the operations in the Graph
+        if(alpha.shape[0] == 1):
             force_broadcasting = True
 
     # Pre-calculate the areas under each piecewise section
