@@ -219,13 +219,17 @@ def build_simple_mpscr_model(y, delta, model_spec, base_spec, seed = 10):
                 results_dict[key] = results_dict[key].to_numpy()
             if(hasattr(results_dict[key], "numpy")):
                 results_dict[key] = results_dict[key].numpy()
+
+        # The observed survival values for patients correspond to a 1d vector
+        results_dict["S_train"] = results_dict["S_train"].flatten()
+        results_dict["S_test"] = results_dict["S_test"].flatten()
+        results_dict["H_train"] = results_dict["H_train"].flatten()
+        results_dict["H_test"] = results_dict["H_test"].flatten()
         
         return results_dict
     
     model.get_survival_cure = types.MethodType( get_survival_cure, model )
-    
     return model
-
 
 def build_medium_mpscr_model(y, delta, input_dim, model_spec, base_spec,
                              neural_network = None, neural_network_call = None, neural_network_call_nolast = None,
@@ -361,8 +365,8 @@ def build_medium_mpscr_model(y, delta, input_dim, model_spec, base_spec,
         theta_test = self.C_inv( self.a0(q) / p_test, q )
     
         S0_ts = tf.cast( base_spec.survival(ts_grid, alpha), tf.float32 )
-        S0_train = tf.cast( base_spec.survival(y_train, alpha), tf.float32 )
-        S0_test = tf.cast( base_spec.survival(y_test, alpha), tf.float32 )
+        S0_train = tf.reshape( tf.cast( base_spec.survival(y_train, alpha), tf.float32 ), [-1,1] )
+        S0_test = tf.reshape( tf.cast( base_spec.survival(y_test, alpha), tf.float32 ), [-1,1] )
         
         u_ts_train = S0_ts * self.phi(theta_train, q)
         u_ts_test = S0_ts * self.phi(theta_test, q)
@@ -409,6 +413,12 @@ def build_medium_mpscr_model(y, delta, input_dim, model_spec, base_spec,
                 results_dict[key] = results_dict[key].to_numpy()
             if(hasattr(results_dict[key], "numpy")):
                 results_dict[key] = results_dict[key].numpy()
+                
+        # The observed survival values for patients correspond to a 1d vector
+        results_dict["S_train"] = results_dict["S_train"].flatten()
+        results_dict["S_test"] = results_dict["S_test"].flatten()
+        results_dict["H_train"] = results_dict["H_train"].flatten()
+        results_dict["H_test"] = results_dict["H_test"].flatten()
         
         return results_dict
 
@@ -606,6 +616,12 @@ def build_flexible_mpscr_model(y, delta, input_dim, model_spec, base_spec,
                 results_dict[key] = results_dict[key].to_numpy()
             if(hasattr(results_dict[key], "numpy")):
                 results_dict[key] = results_dict[key].numpy()
+
+        # The observed survival values for patients correspond to a 1d vector
+        results_dict["S_train"] = results_dict["S_train"].flatten()
+        results_dict["S_test"] = results_dict["S_test"].flatten()
+        results_dict["H_train"] = results_dict["H_train"].flatten()
+        results_dict["H_test"] = results_dict["H_test"].flatten()
         
         return results_dict
 
