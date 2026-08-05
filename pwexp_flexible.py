@@ -158,9 +158,10 @@ def log_survival(t, alpha, s, force_broadcasting = False):
 def pdf(t, alpha, s, force_broadcasting = False):
     return h(t, alpha, s) * cdf(t, alpha, s, lower_tail = False, force_broadcasting = force_broadcasting)
 
-# Quantile function - Assume alpha is a single vector (function not vectorized)
+# Quantile function - Assume alpha is a single vector [1, s.shape[0]] (function not vectorized)
 def ppf(q, alpha, s):
-    """"""
+    # alpha is assumed to be a single vector
+    alpha_single_vector = alpha[0,:]
     
     original_shape = tf.shape(q)
     q = tf.cast(q, tf.float64)
@@ -178,14 +179,14 @@ def ppf(q, alpha, s):
     # Obtain the intervals between knots
     interval_widths = s[1:] - s[:-1]
     # Pre-calculate the areas under each piecewise section of the hazard function
-    hazard_increments = alpha[:-1] * interval_widths
+    hazard_increments = alpha_single_vector[:-1] * interval_widths
     # g=1 has 0 accumulated lag, g=2 has alpha_1 (s_1 - s_0), and so on.
     all_lags = tf.concat([tf.constant([0.0], dtype=tf.float64), tf.math.cumsum(hazard_increments)], axis = 0)
     # For each quantile, obtain its correponding cummulated hazard depending on its respective position according to t
     cummulated_lags = tf.gather(all_lags, g-1)
 
     # For each t, obtain which alpha corresponds to it
-    respective_alpha = tf.gather(alpha, g-1)
+    respective_alpha = tf.gather(alpha_single_vector, g-1)
     # For each t, obtain which knot is directly below it
     respective_s = tf.gather(s, g-1)
     
