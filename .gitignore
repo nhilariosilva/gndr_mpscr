@@ -24,5 +24,6 @@ LICENSE
 *.jpeg
 *.npy
 *.mgz
+*.npz
 OASIS Raw Data/**
 OASIS Data/**
