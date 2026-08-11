@@ -228,7 +228,7 @@ def average_kaplan_meier(ts_grid, S_ts, y, delta,
     if(plot_km):
         km = lifelines.KaplanMeierFitter()
         km.fit(y, delta)
-        km.plot(ax = ax, ci_show = False, show_censors = False, label = "Kaplan-Meier", color = colors[0], legend = False)
+        km.plot(ax = ax, ci_show = False, show_censors = False, label = "Kaplan-Meier", color = "black", legend = False)
     ax.plot(ts_grid, S_avg, color = color, label = "Average survival curve")
     
     ax.set_ylim(0,1.05)
@@ -259,12 +259,12 @@ def average_kaplan_meier_train_test(ts_grid,
     if(plot_km):
         km = lifelines.KaplanMeierFitter()    
         km.fit(y_train, delta_train)
-        km.plot(ax = ax1, ci_show = False, show_censors = False, color = colors[0], legend = False)
+        km.plot(ax = ax1, ci_show = False, show_censors = False, color = "black", legend = False)
     ax1.plot(ts_grid, S_avg_train, color = color)
 
     if(plot_km):
         km.fit(y_test, delta_test)
-        km.plot(ax = ax2, ci_show = False, show_censors = False, color = colors[0], legend = False)
+        km.plot(ax = ax2, ci_show = False, show_censors = False, color = "black", legend = False)
     ax2.plot(ts_grid, S_avg_test, color = color)
     
     ax1.set_ylim(0,1.05)

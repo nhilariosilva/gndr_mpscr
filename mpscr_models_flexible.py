@@ -77,7 +77,7 @@ def build_simple_mpscr_model(y, delta, model_spec, base_spec, seed = 10):
     if(hasq):
         parameters = {
             "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": base_spec.n_parameters, "init": 1.0, "warmup_time": 0},
-            "q": {"link": link_q, "link_inv": link_inv_q, "par_type": "independent", "shape": 1, "init": 1.0, "warmup_time": 0},
+            "q": {"link": link_q, "link_inv": link_inv_q, "par_type": "independent", "shape": 1, "init": link_q(0.0), "warmup_time": 0},
             "raw_p": {"link": tf.identity, "link_inv": tf.identity, "par_type": "independent", "shape": 1, "init": 0.0, "warmup_time": 0},
         }
     else:
@@ -285,7 +285,7 @@ def build_medium_mpscr_model(y, delta, input_dim, model_spec, base_spec,
     if(hasq):
         parameters = {
             "alpha": {"link": tf.math.softplus, "link_inv": softplus_inv, "par_type": "independent", "shape": base_spec.n_parameters, "init": 1.0, "warmup_time": 0},
-            "q": {"link": link_q, "link_inv": link_inv_q, "par_type": "independent", "shape": 1, "init": 1.0, "warmup_time": 0},
+            "q": {"link": link_q, "link_inv": link_inv_q, "par_type": "independent", "shape": 1, "init": link_q(0.0), "warmup_time": 0},
             "raw_p": {"link": tf.identity, "link_inv": tf.identity, "par_type": "nn", "shape": 1, "init": 0.0, "warmup_time": 0},
         }
     else:
@@ -1196,16 +1196,34 @@ class MPSGeeta:
             # It takes between 10 and 15 steps to converge
             if(theta0 is None):
                 # Start all theta values at the middle point of their parameter space
-                theta0 = tf.ones( tf.shape(u) ) * 1/(2*q)
-            eps = tf.constant(eps, dtype = tf.float32)
-            for i in range(max_iter):
-                theta = theta0 - (theta0*(1-theta0)**(q-1)-u) / ( (1-theta0)**(q-2)*(1-q*theta0) )
-                dist = tf.math.abs(theta - theta0)
-                if(tf.norm(dist) < eps):
-                    break
-                # If must continue, update theta0 to the current step
-                theta0 = theta
-            return theta
+                theta0 = tf.ones(tf.shape(u), dtype = tf.float32) * tf.cast(1.0 / (2.0 * q), tf.float32)
+            eps = tf.constant(eps, dtype=tf.float32)
+
+            def cond(i, theta, dist):
+                # Condition to continue: i < max_iter AND norm(dist) >= eps
+                return tf.logical_and(i < max_iter, tf.norm(dist) >= eps)
+
+            def body(i, theta, dist):
+                # Newton-Raphson update step
+                next_theta = theta - (theta * (1 - theta)**(q - 1) - u) / ((1 - theta)**(q - 2) * (1 - q * theta))
+                # Calculate the new absolute distance
+                new_dist = tf.math.abs(next_theta - theta)
+                return i + 1, next_theta, new_dist
+
+            # Initialization for the loop variables
+            i0 = tf.constant(0)
+            
+            # Initialize distance to be artificially larger than eps so the loop runs at least once
+            initial_dist = tf.ones(tf.shape(u), dtype = tf.float32) * (eps + 1.0)
+            # Execute the native TensorFlow while loop
+            _, final_theta, _ = tf.while_loop(
+                cond,
+                body,
+                loop_vars = (i0, theta0, initial_dist),
+                maximum_iterations = max_iter # Safety stop, natively supported by tf.while_loop
+            )
+            
+            return final_theta
         
         def C(theta, q):
             return (1-theta)**(1-q)
