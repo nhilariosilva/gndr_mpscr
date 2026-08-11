@@ -876,78 +876,6 @@ class MPSPoisson:
         def sup(q):
             return tf.cast( np.arange(B), tf.float32 )
 
-        def Spop(t, p, q, alpha, s):
-            """
-                Obtain the populational survival function for all values of p given.
-                
-                Parameters:
-                    t: array of times to be evaluated ( shape (T,) )
-                    p: array of cure probabilities for each patient ( shape (n,) )
-                    q: constant value of the second parameter from the MPS family
-                    
-                This function returns a (T,n) matrix with the population survival function for all t values and patients with cure probabilities p.
-            """
-            # Ensure inputs are already properly unidimensional
-            t = tf.cast( tf.squeeze(t), tf.float32 )
-            p = tf.cast( tf.squeeze(p), tf.float32 )
-            
-            # Transpose the array of times for broadcasting
-            t = t[:,None]
-            
-            eps = tf.constant(1.0e-5, dtype = tf.float32)
-            p = tf.clip_by_value(p, eps, 1.0-eps)
-        
-            theta = self.C_inv( self.a0(q) / p, q )
-
-            # Parts to calculate the final survival curves
-            S0_t = pwexp.cdf(t, alpha, s, lower_tail = False)
-            u_t = S0_t * self.phi(theta, q)
-            A_u_t = self.A( u_t, q )
-            C_theta = self.C( theta, q )
-            # Final survival curve
-            S_t = A_u_t / C_theta        
-
-            return S_t
-
-        def fpop(t, p, q, alpha, s):
-            """
-                Obtain the populational density function for all values of p given.
-                
-                Parameters:
-                    t: array of times to be evaluated ( shape (T,) )
-                    p: array of cure probabilities for each patient ( shape (n,) )
-                    q: constant value of the second parameter from the MPS family
-                    
-                This function returns a (T,n) matrix with the population survival function for all t values and patients with cure probabilities p.
-            """
-            # Ensure inputs are already properly unidimensional
-            t = tf.cast( tf.squeeze(t), tf.float32 )
-            p = tf.cast( tf.squeeze(p), tf.float32 )
-            
-            # Transpose the array of times for broadcasting
-            t = t[:,None]
-            
-            eps = tf.constant(1.0e-5, dtype = tf.float32)
-            p = tf.clip_by_value(p, eps, 1.0-eps)
-        
-            theta = self.C_inv( self.a0(q) / p, q )
-
-            # Parts to calculate the final survival curves
-            S0_t = pwexp.cdf(t, alpha, s, lower_tail = False)
-            f0_t = pwexp.pdf(t, alpha, s)
-
-            u_t = S0_t * self.phi(theta, q)
-            with tf.GradientTape() as tape:
-                tape.watch(u_t)
-                A_u_t = self.A( u_t, q )
-                
-            Aprime_u_t = tape.gradient(A_u_t, u_t)
-            C_theta = self.C( theta, q )
-            # Final density curve
-            f_t = A_u_t / C_theta * f0_t * self.phi(theta, q)
-
-            return f_t
-        
         self.a = a
         self.a0 = a0
         self.log_a = log_a
@@ -960,9 +888,6 @@ class MPSPoisson:
         self.p_min = p_min
         self.p_max = p_max
         self.sup = sup
-        self.Spop = Spop
-        self.fpop = fpop
-
 
 class MPSBinomial:
 
@@ -1160,7 +1085,7 @@ class MPSLogarithmic:
 
 
 class MPSRGP:
-
+    
     def __init__(self, fixed_q = None):
         if(fixed_q is None):
             self.hasq = True
@@ -1240,6 +1165,89 @@ class MPSRGP:
         self.link_inv_q = link_inv_q
 
 
+class MPSGeeta:
+    
+    def __init__(self, fixed_q = None):
+        if(fixed_q is None):
+            self.hasq = True
+            self.fixed_q = tf.cast(0.0, tf.float32)
+        else:
+            self.hasq = False
+            self.fixed_q = tf.cast(fixed_q, tf.float32)
+        
+        def log_a(m, q):
+            return -tf.math.log(q*m+q-1) + tf.math.lgamma(q*m+q) - tf.math.lgamma(m+2) - tf.math.lgamma(m*(q-1)+q-1)
+
+        def a(m, q):
+            return tf.math.exp( log_a(m, q) )
+
+        def a0(q):
+            return tf.cast(1.0, tf.float32)
+        
+        def phi(theta, q):
+            return theta * (1-theta)**(q-1)
+        
+        def log_phi(theta, q):
+            return tf.math.log(theta) + (q-1)*tf.math.log(1-theta)
+                               
+        def phi_inv(u, q, theta0 = None, max_iter = 25, eps = 1.0e-6):
+            # Since phi in the Geeta model can not be inverted analytically
+            # We implement a simple instance of the Newton-Raphson algorithm to invert it
+            # It takes between 10 and 15 steps to converge
+            if(theta0 is None):
+                # Start all theta values at the middle point of their parameter space
+                theta0 = tf.ones( tf.shape(u) ) * 1/(2*q)
+            eps = tf.constant(eps, dtype = tf.float32)
+            for i in range(max_iter):
+                theta = theta0 - (theta0*(1-theta0)**(q-1)-u) / ( (1-theta0)**(q-2)*(1-q*theta0) )
+                dist = tf.math.abs(theta - theta0)
+                if(tf.norm(dist) < eps):
+                    break
+                # If must continue, update theta0 to the current step
+                theta0 = theta
+            return theta
+        
+        def C(theta, q):
+            return (1-theta)**(1-q)
+        
+        def C_inv(u, q):
+            return 1 - u**(1/(1-q))
+        
+        def A(u, q):
+            theta = phi_inv(u, q)
+            return C(theta, q)
+
+        def p_min(q):
+            return tf.cast( ((q-1)/q)**(q-1) , tf.float32)
+
+        def p_max(q):
+            return tf.cast(1.0, tf.float32)
+
+        def sup(q):
+            return tf.cast(np.arange(B), tf.float32)
+
+        def link_q(q):
+            # In the Geeta, q is strictly greater than 1
+            return tf.math.softplus(q) + 1
+        
+        def link_inv_q(u):
+            # Inverse of the softplus function translated 1 upwards
+            return tf.math.log(tf.math.exp(u-1) - 1)
+            
+        self.a = a
+        self.a0 = a0
+        self.log_a = log_a
+        self.phi = phi
+        self.log_phi = log_phi
+        self.phi_inv = phi_inv
+        self.C = C
+        self.C_inv = C_inv
+        self.A = A
+        self.p_min = p_min
+        self.p_max = p_max
+        self.sup = sup
+        self.link_q = link_q
+        self.link_inv_q = link_inv_q
 
 
 
