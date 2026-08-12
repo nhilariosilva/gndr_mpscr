@@ -55,7 +55,9 @@ def load_oasis_data(long_term_limit = None, train_size = 0.75, random_state = 15
     
     print("Train dimension: {}".format(idx_train.shape))
     print("Test dimension: {}".format(idx_test.shape))
-    
+
+    df_train = df.iloc[idx_train, :]
+    df_test = df.iloc[idx_test, :]
     y_train = df.loc[idx_train, "time_days"] / 365
     y_test = df.loc[idx_test, "time_days"] / 365
     delta_train = df.loc[idx_train, "delta"]
@@ -64,7 +66,7 @@ def load_oasis_data(long_term_limit = None, train_size = 0.75, random_state = 15
     x_train = x[idx_train]
     x_test = x[idx_test]
 
-    return y_train, delta_train, x_train, y_test, delta_test, x_test
+    return df_train, y_train, delta_train, x_train, df_test, y_test, delta_test, x_test
 
 
 def build_neural_network_structure(n_outputs):

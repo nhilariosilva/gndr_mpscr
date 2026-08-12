@@ -213,7 +213,7 @@ def plot_model_convergence(thf_model, ax1 = None, ax2 = None, ax3 = None, ax4 = 
     plt.show()
 
 def average_kaplan_meier(ts_grid, S_ts, y, delta,
-                         show_individual = False, ax = None, plot_km = True, color = "red"):
+                         show_individual = False, ax = None, plot_km = True, color = "red", km_color = "black"):
     S_avg = np.mean(S_ts, axis = 0)
     
     if(ax is None):
@@ -223,13 +223,35 @@ def average_kaplan_meier(ts_grid, S_ts, y, delta,
     
     if(show_individual):
         for j in range(S_ts.shape[0]):
-            ax.plot(ts_grid, S_ts[j,:], color = "black", alpha = 0.2, linewidth = 0.8)
+            ax.plot(ts_grid, S_ts[j,:], color = color, alpha = 0.2, linewidth = 0.8)
 
     if(plot_km):
         km = lifelines.KaplanMeierFitter()
         km.fit(y, delta)
-        km.plot(ax = ax, ci_show = False, show_censors = False, label = "Kaplan-Meier", color = "black", legend = False)
+        km.plot(ax = ax, ci_show = False, show_censors = False, label = "Kaplan-Meier", color = km_color, legend = False)
     ax.plot(ts_grid, S_avg, color = color, label = "Average survival curve")
+    
+    ax.set_ylim(0,1.05)
+    ax.set_title("Training set")
+
+def quantile_kaplan_meier(ts_grid, S_ts, y, delta, q,
+                          show_individual = False, ax = None, plot_km = True, color = "red", km_color = "black"):
+    S_q = np.quantile(S_ts, q, axis = 0)
+
+    if(ax is None):
+        fig, ax = plt.subplots(nrows = 1, ncols = 1, figsize = (8,6))
+    
+    colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    
+    if(show_individual):
+        for j in range(S_ts.shape[0]):
+            ax.plot(ts_grid, S_ts[j,:], color = color, alpha = 0.2, linewidth = 0.8)
+
+    if(plot_km):
+        km = lifelines.KaplanMeierFitter()
+        km.fit(y, delta)
+        km.plot(ax = ax, ci_show = False, show_censors = False, label = "Kaplan-Meier", color = km_color, legend = False)
+    ax.plot(ts_grid, S_q, color = color, label = "Quantile {} survival curve".format(q))
     
     ax.set_ylim(0,1.05)
     ax.set_title("Training set")
@@ -237,7 +259,8 @@ def average_kaplan_meier(ts_grid, S_ts, y, delta,
 def average_kaplan_meier_train_test(ts_grid,
                                     S_ts_train, S_ts_test,
                                     y_train, delta_train, y_test, delta_test,
-                                    show_individual = False, ax1 = None, ax2 = None, color = "red", plot_km = True):
+                                    show_individual = False, ax1 = None, ax2 = None,
+                                    color = "red", plot_km = True, km_color = "black"):
 
     S_avg_train = np.mean(S_ts_train, axis = 0)
     S_avg_test = np.mean(S_ts_test, axis = 0)
@@ -251,20 +274,20 @@ def average_kaplan_meier_train_test(ts_grid,
     
     if(show_individual):
         for j in range(S_ts_train.shape[0]):
-            ax1.plot(ts_grid, S_ts_train[j,:], color = "black", alpha = 0.2, linewidth = 0.8)
+            ax1.plot(ts_grid, S_ts_train[j,:], color = color, alpha = 0.2, linewidth = 0.8)
         
         for j in range(S_ts_test.shape[0]):
-            ax2.plot(ts_grid, S_ts_test[j,:], color = "black", alpha = 0.2, linewidth = 0.8)
+            ax2.plot(ts_grid, S_ts_test[j,:], color = color, alpha = 0.2, linewidth = 0.8)
 
     if(plot_km):
         km = lifelines.KaplanMeierFitter()    
         km.fit(y_train, delta_train)
-        km.plot(ax = ax1, ci_show = False, show_censors = False, color = "black", legend = False)
+        km.plot(ax = ax1, ci_show = False, show_censors = False, color = km_color, legend = False)
     ax1.plot(ts_grid, S_avg_train, color = color)
 
     if(plot_km):
         km.fit(y_test, delta_test)
-        km.plot(ax = ax2, ci_show = False, show_censors = False, color = "black", legend = False)
+        km.plot(ax = ax2, ci_show = False, show_censors = False, color = km_color, legend = False)
     ax2.plot(ts_grid, S_avg_test, color = color)
     
     ax1.set_ylim(0,1.05)
