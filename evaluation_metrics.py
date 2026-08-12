@@ -62,7 +62,7 @@ def calculate_integrated_ipcw_brier_score(results_dict):
     train_surv, test_surv, eval_surv_probs, eval_times = format_ipcw_data(results_dict)
     # Calculate Time-Dependent Brier Score
     ibs = integrated_brier_score(train_surv, test_surv, eval_surv_probs, eval_times)
-    return brier_scores
+    return ibs
 
 def calculate_unos_auc(results_dict):
     """
