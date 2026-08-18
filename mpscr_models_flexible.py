@@ -143,6 +143,9 @@ def build_simple_mpscr_model(y, delta, model_spec, base_spec, seed = 10):
     model.p_min = p_min
     model.p_max = p_max
     model.A = A
+    model.fixed_q = fixed_q
+    model.base_spec = base_spec
+    model.model_spec = model_spec
     model.link_q = link_q
     model.link_inv_q = link_inv_q
     
@@ -349,6 +352,9 @@ def build_medium_mpscr_model(y, delta, input_dim, model_spec, base_spec,
     model.p_min = p_min
     model.p_max = p_max
     model.A = A
+    model.fixed_q = fixed_q
+    model.base_spec = base_spec
+    model.model_spec = model_spec
     model.link_q = link_q
     model.link_inv_q = link_inv_q
     
@@ -564,6 +570,9 @@ def build_flexible_mpscr_model(y, delta, input_dim, model_spec, base_spec,
     model.p_min = p_min
     model.p_max = p_max
     model.A = A
+    model.fixed_q = fixed_q
+    model.base_spec = base_spec
+    model.model_spec = model_spec
     model.link_q = link_q
     model.link_inv_q = link_inv_q
     
